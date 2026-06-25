@@ -220,6 +220,10 @@ public final class CockpitPanel extends JPanel {
         send.addActionListener(e -> sendCurrentRequest());
         bar.add(send);
 
+        JButton clearCache = new JButton("Clear Cache");
+        clearCache.addActionListener(e -> clearContextCache());
+        bar.add(clearCache);
+
         JButton exportCurl = new JButton("Export curl");
         exportCurl.addActionListener(e -> exportCurrent("curl"));
         bar.add(exportCurl);
@@ -357,6 +361,21 @@ public final class CockpitPanel extends JPanel {
         state.pushSnapshot(snapshot);
         historyLabel.setText(state.historyLabel());
         updateContextCounter();
+    }
+
+    private void clearContextCache() {
+        quietSaveActiveNote();
+        stopBusyIndicator();
+        lastRagDump = "";
+        HttpService service = state.currentService();
+        if (service == null) {
+            service = HttpText.inferService(requestArea.getText(), true).orElse(null);
+        }
+        TrafficSnapshot snapshot = new TrafficSnapshot(service, requestArea.getText(), responseArea.getText(), Instant.now(), "cache reset");
+        state.resetToCurrentSnapshot(snapshot);
+        historyLabel.setText(state.historyLabel());
+        updateContextCounter();
+        setStatus("Cache cleared. Context reset to current request, response, and note.");
     }
 
     private void sendCurrentRequest() {
