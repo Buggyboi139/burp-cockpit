@@ -20,7 +20,8 @@ Burp Cockpit is a Burp Suite Community/Professional Montoya extension that ports
 - Keeps notes local to Kali under `~/.burp-cockpit/notes/`.
 - Auto-loads or creates the current host note when a request is opened.
 - Always includes the active local note in AI context with a flat first-10k-token cap.
-- Appends Analyze output into the active local note.
+- Gives the model a local note append channel using `[[COCKPIT_NOTE]] ... [[/COCKPIT_NOTE]]` blocks.
+- Strips note blocks out of visible chat and appends their contents to the active local note.
 - Keeps the target label out of the toolbar so long paths stay in the request editor where they belong.
 - Keeps the token selector fixed-width so it does not eat the toolbar like a deranged UI parasite.
 - Includes export helpers for curl and Python.
@@ -54,6 +55,18 @@ Editable note name field
 [Save] [Refresh]
 Local Markdown note editor
 ```
+
+## Model note append channel
+
+The prompt sent to the model includes a local note append channel:
+
+```text
+[[COCKPIT_NOTE]]
+Markdown to append. Keep it concise. Do not include full chat history.
+[[/COCKPIT_NOTE]]
+```
+
+When the model emits one or more of those blocks, Cockpit removes the block from the visible chat transcript and appends the contents to the bottom of the active local note under a timestamped `Model note` heading. Notes stay local in Kali. This is deliberately boring because boring usually survives contact with Java desktop software.
 
 ## Context caps
 
@@ -189,7 +202,7 @@ calendar.google.com.md
 script.google.com.md
 ```
 
-The note dropdown and name field are editable. Typing a new note name and pressing `Save` creates or updates that local Markdown note. `New Note` gives you a clean note-creation path without pretending combo boxes are a user interface triumph.
+The note dropdown and name field are editable. Typing a new note name and pressing `Save` renames the active local Markdown note. `New Note` creates a separate note.
 
 ## Common failure: Burp HTML error from AI call
 
