@@ -11,8 +11,7 @@ public final class PromptBuilder {
     public static final int REQUEST_TAIL_TOKENS = 4000;
     public static final int RESPONSE_HEAD_TOKENS = 4000;
     public static final int RESPONSE_TAIL_TOKENS = 4000;
-    public static final int NOTES_HEAD_TOKENS = 2000;
-    public static final int NOTES_TAIL_TOKENS = 2000;
+    public static final int NOTES_CONTEXT_TOKENS = 10000;
     public static final int RAG_HEAD_TOKENS = 4000;
     public static final int RAG_TAIL_TOKENS = 4000;
 
@@ -118,7 +117,7 @@ public final class PromptBuilder {
     }
 
     public static String notesContext(String value) {
-        return headTail(value, NOTES_HEAD_TOKENS, NOTES_TAIL_TOKENS);
+        return firstTokens(value, NOTES_CONTEXT_TOKENS);
     }
 
     public static String ragContext(String value) {
@@ -127,6 +126,15 @@ public final class PromptBuilder {
 
     public static int estimatedTokens(String value) {
         return Math.max(0, Objects.toString(value, "").length() / CHARS_PER_TOKEN);
+    }
+
+    public static String firstTokens(String value, int tokens) {
+        String text = Objects.toString(value, "");
+        int maxChars = Math.max(0, tokens * CHARS_PER_TOKEN);
+        if (text.length() <= maxChars) {
+            return text;
+        }
+        return text.substring(0, maxChars) + "\n\n[... truncated at ~" + tokens + " tokens from " + text.length() + " chars ...]";
     }
 
     public static String headTail(String value, int headTokens, int tailTokens) {
