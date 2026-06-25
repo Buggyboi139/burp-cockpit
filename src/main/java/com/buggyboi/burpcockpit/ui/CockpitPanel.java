@@ -50,6 +50,8 @@ public final class CockpitPanel extends JPanel {
     private static final Dimension TOKEN_SELECTOR_SIZE = new Dimension(58, 24);
     private static final Dimension NOTE_SELECTOR_SIZE = new Dimension(230, 24);
     private static final Dimension NOTE_NAME_SIZE = new Dimension(230, 24);
+    private static final String NOTE_OPEN = "[[COCKPIT_NOTE]]";
+    private static final String NOTE_CLOSE = "[[/COCKPIT_NOTE]]";
 
     private final MontoyaApi api;
     private final CockpitState state;
@@ -461,6 +463,7 @@ public final class CockpitPanel extends JPanel {
                 String prompt = analysis
                         ? PromptBuilder.analysisPrompt(state, promptArea.getText(), activeNoteContent(), ragDump)
                         : PromptBuilder.chatPrompt(state, promptArea.getText(), activeNoteContent(), ragDump);
+                prompt = withNoteInstructions(prompt);
                 String system = PromptBuilder.systemPrompt(settings.includeThinking());
 
                 lumaraClient.streamChat(settings, system, prompt, contentToken -> TextContextMenu.later(() -> {
@@ -474,14 +477,17 @@ public final class CockpitPanel extends JPanel {
 
                 TextContextMenu.later(() -> {
                     stopBusyIndicator();
+                    int appended = 0;
                     if (!contentStarted.get() && transcriptArea.getText().startsWith("Working")) {
                         transcriptArea.setText("No streamed content was returned by the model.");
+                    } else {
+                        NoteExtractResult result = extractAndAppendNoteBlocks(transcriptArea.getText());
+                        appended = result.appendedCount();
+                        transcriptArea.setText(result.visibleText().trim());
+                        transcriptArea.setCaretPosition(0);
                     }
                     state.lastPromptRequest(requestArea.getText());
-                    if (analysis) {
-                        appendAnalysisToNotes(transcriptArea.getText());
-                    }
-                    setStatus("AI response ready.");
+                    setStatus(appended > 0 ? "AI response ready. Appended " + appended + " note block(s)." : "AI response ready.");
                 });
             } catch (InterruptedException interrupted) {
                 Thread.currentThread().interrupt();
@@ -502,6 +508,68 @@ public final class CockpitPanel extends JPanel {
         worker.setDaemon(true);
         worker.start();
     }
+
+    private String withNoteInstructions(String prompt) {
+        return "Local note append channel:\n"
+                + "To append durable Markdown to the active note, include a block exactly like this:\n"
+                + NOTE_OPEN + "\n"
+                + "Markdown to append. Keep it concise. Do not include full chat history.\n"
+                + NOTE_CLOSE + "\n"
+                + "This block is hidden from chat after the response and appended to the current local note.\n\n"
+                + prompt;
+    }
+
+    private NoteExtractResult extractAndAppendNoteBlocks(String output) {
+        String text = Objects.toString(output, "");
+        String lower = text.toLowerCase();
+        String openLower = NOTE_OPEN.toLowerCase();
+        String closeLower = NOTE_CLOSE.toLowerCase();
+        StringBuilder visible = new StringBuilder();
+        int appended = 0;
+        int cursor = 0;
+        while (cursor < text.length()) {
+            int open = lower.indexOf(openLower, cursor);
+            if (open < 0) {
+                visible.append(text.substring(cursor));
+                break;
+            }
+            visible.append(text, cursor, open);
+            int contentStart = open + NOTE_OPEN.length();
+            int close = lower.indexOf(closeLower, contentStart);
+            if (close < 0) {
+                visible.append(text.substring(open));
+                break;
+            }
+            String note = text.substring(contentStart, close).trim();
+            if (!note.isBlank()) {
+                appendModelNote(note);
+                appended++;
+            }
+            cursor = close + NOTE_CLOSE.length();
+        }
+        return new NoteExtractResult(visible.toString(), appended);
+    }
+
+    private void appendModelNote(String note) {
+        String clean = Objects.toString(note, "").trim();
+        if (clean.isBlank()) {
+            return;
+        }
+        if (activeNoteName.isBlank()) {
+            String fallback = currentNoteName();
+            if (fallback.isBlank()) {
+                fallback = "DEFAULT";
+            }
+            activeNoteName = notesStore.ensureNote(fallback);
+            selectNote(activeNoteName);
+        }
+        String append = "\n\n## Model note " + Instant.now() + "\n\n" + clean + "\n";
+        notesArea.append(append);
+        quietSaveActiveNote();
+        updateContextCounter();
+    }
+
+    private record NoteExtractResult(String visibleText, int appendedCount) {}
 
     private void startBusyIndicator() {
         stopBusyIndicator();
