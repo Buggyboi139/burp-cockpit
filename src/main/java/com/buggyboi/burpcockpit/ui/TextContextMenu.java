@@ -1,5 +1,6 @@
 package com.buggyboi.burpcockpit.ui;
 
+import javax.swing.AbstractAction;
 import javax.swing.JButton;
 import javax.swing.JLabel;
 import javax.swing.JMenuItem;
@@ -7,11 +8,13 @@ import javax.swing.JPanel;
 import javax.swing.JPopupMenu;
 import javax.swing.JTextArea;
 import javax.swing.JTextField;
+import javax.swing.KeyStroke;
 import javax.swing.SwingUtilities;
 import javax.swing.text.JTextComponent;
 import java.awt.BorderLayout;
 import java.awt.Component;
 import java.awt.Container;
+import java.awt.event.ActionEvent;
 import java.awt.event.MouseAdapter;
 import java.awt.event.MouseEvent;
 import java.util.Objects;
@@ -356,9 +359,17 @@ public final class TextContextMenu {
         private String submittedPrompt = "";
         private boolean submittedPromptAvailable;
         private boolean autoClearing;
+        private boolean submitHooksInstalled;
 
         private AutoClearingPromptArea(int rows, int cols) {
             super(rows, cols);
+            installEnterBindings();
+        }
+
+        @Override
+        public void addNotify() {
+            super.addNotify();
+            SwingUtilities.invokeLater(this::installSubmitHooks);
         }
 
         @Override
@@ -372,10 +383,9 @@ public final class TextContextMenu {
                 }
                 submittedPrompt = current;
                 submittedPromptAvailable = true;
-                scheduleClearIfUnchanged(current);
                 return current;
             }
-            if (current.isBlank() && submittedPromptAvailable) {
+            if (submittedPromptAvailable) {
                 return submittedPrompt;
             }
             return current;
@@ -390,6 +400,57 @@ public final class TextContextMenu {
             super.setText(text);
         }
 
+        private void installEnterBindings() {
+            getInputMap().put(KeyStroke.getKeyStroke("ENTER"), "burp-cockpit-send-chat");
+            getActionMap().put("burp-cockpit-send-chat", new AbstractAction() {
+                @Override
+                public void actionPerformed(ActionEvent event) {
+                    captureSubmittedPrompt();
+                    JButton sendChat = findButton(AutoClearingPromptArea.this, "Send Chat");
+                    if (sendChat != null && sendChat.isEnabled()) {
+                        sendChat.doClick();
+                    }
+                }
+            });
+            getInputMap().put(KeyStroke.getKeyStroke("shift ENTER"), "burp-cockpit-insert-break");
+            getActionMap().put("burp-cockpit-insert-break", new AbstractAction() {
+                @Override
+                public void actionPerformed(ActionEvent event) {
+                    replaceSelection("\n");
+                }
+            });
+        }
+
+        private void installSubmitHooks() {
+            if (submitHooksInstalled) {
+                return;
+            }
+            JButton sendChat = findButton(this, "Send Chat");
+            JButton analyze = findButton(this, "Analyze");
+            if (sendChat == null && analyze == null) {
+                return;
+            }
+            if (sendChat != null) {
+                sendChat.addActionListener(e -> captureSubmittedPrompt());
+            }
+            if (analyze != null) {
+                analyze.addActionListener(e -> captureSubmittedPrompt());
+            }
+            submitHooksInstalled = true;
+        }
+
+        private void captureSubmittedPrompt() {
+            String submitted = super.getText();
+            if (submitted.isBlank()) {
+                submittedPrompt = "";
+                submittedPromptAvailable = false;
+                return;
+            }
+            submittedPrompt = submitted;
+            submittedPromptAvailable = true;
+            scheduleClearIfUnchanged(submitted);
+        }
+
         private void scheduleClearIfUnchanged(String submitted) {
             SwingUtilities.invokeLater(() -> {
                 if (!super.getText().equals(submitted)) {
@@ -402,6 +463,32 @@ public final class TextContextMenu {
                     autoClearing = false;
                 }
             });
+        }
+
+        private static JButton findButton(Component start, String text) {
+            Container root = start.getParent();
+            while (root != null && root.getParent() != null) {
+                root = root.getParent();
+            }
+            if (root == null) {
+                return null;
+            }
+            return findButtonRecursive(root, text);
+        }
+
+        private static JButton findButtonRecursive(Component component, String text) {
+            if (component instanceof JButton button && text.equals(button.getText())) {
+                return button;
+            }
+            if (component instanceof Container container) {
+                for (Component child : container.getComponents()) {
+                    JButton found = findButtonRecursive(child, text);
+                    if (found != null) {
+                        return found;
+                    }
+                }
+            }
+            return null;
         }
     }
 }
