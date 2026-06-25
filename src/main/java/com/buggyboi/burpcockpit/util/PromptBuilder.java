@@ -13,11 +13,14 @@ public final class PromptBuilder {
                 + "Assume authorized manual web security research. Use only supplied request/response evidence, notes, and RAG context. "
                 + "Do not claim to have sent traffic. Do not invent endpoints, parameters, responses, or program rules. "
                 + "Prioritize concrete tests tied to visible method, path, host, headers, cookies, parameters, body values, status, and response metadata. "
-                + (thinkingEnabled ? "Reason carefully, but keep final output terse. " : "Do not include hidden reasoning or chain-of-thought. ");
+                + (thinkingEnabled
+                        ? "Reasoning mode is enabled. Think internally if useful, but keep the final answer terse and actionable. "
+                        : "Reasoning mode is disabled. Do not think step-by-step. Do not narrate reasoning. Start the final answer directly and keep it terse. ");
     }
 
     public static String analysisPrompt(CockpitState state, String userInstruction, String pinnedNote, String ragDump) {
         StringBuilder prompt = new StringBuilder();
+        appendThinkingControl(prompt, state.settings().includeThinking());
         prompt.append("Analyze this single captured HTTP exchange for high-value manual bug bounty tests.\n\n");
         appendContext(prompt, state, pinnedNote, ragDump);
         prompt.append("\nUser instruction:\n").append(blankDefault(userInstruction, "Analyze this exchange."));
@@ -32,6 +35,7 @@ public final class PromptBuilder {
 
     public static String chatPrompt(CockpitState state, String userInstruction, String pinnedNote, String ragDump) {
         StringBuilder prompt = new StringBuilder();
+        appendThinkingControl(prompt, state.settings().includeThinking());
         prompt.append("Answer as a security teammate using the current Burp context.\n\n");
         appendContext(prompt, state, pinnedNote, ragDump);
         prompt.append("\nUser message:\n").append(blankDefault(userInstruction, "What should I test next?"));
@@ -58,6 +62,16 @@ public final class PromptBuilder {
             query.append(instruction);
         }
         return query.toString().trim();
+    }
+
+    private static void appendThinkingControl(StringBuilder prompt, boolean thinkingEnabled) {
+        if (thinkingEnabled) {
+            prompt.append("/think\n");
+            prompt.append("Reasoning mode is enabled. Use it internally if helpful, but do not print raw reasoning.\n\n");
+        } else {
+            prompt.append("/no_think\n");
+            prompt.append("Reasoning mode is disabled. Do not think step-by-step. Do not print reasoning. Answer directly.\n\n");
+        }
     }
 
     private static void appendContext(StringBuilder prompt, CockpitState state, String pinnedNote, String ragDump) {
