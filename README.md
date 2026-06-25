@@ -12,14 +12,15 @@ Burp Cockpit is a Burp Suite Community/Professional Montoya extension that ports
 - Provides the current Cockpit layout: request editor, response viewer, right-side `Analysis` and `Notes` tabs.
 - Streams final AI responses live into the chat transcript area.
 - Uses the `Thinking` checkbox only as a reasoning-behavior toggle.
-- Shows a temporary flashing `Thinking...` indicator in the chat box while waiting for final content.
+- Sends explicit `/think` or `/no_think` control hints with each AI prompt.
+- Shows a temporary flashing `Working...` indicator in the chat box while waiting for final content.
 - Does not display, store, append, or re-inject reasoning text.
 - Supports automatic scoped RAG injection when the `RAG` toggle is enabled.
 - Keeps notes local to Kali under `~/.burp-cockpit/notes/`.
 - Auto-loads or creates the current host note when a request is opened.
 - Always includes the active local note in AI context.
 - Appends Analyze output into the active local note.
-- Truncates the toolbar target label so long paths stay in the request editor where they belong.
+- Keeps the target label out of the toolbar so long paths stay in the request editor where they belong.
 - Includes export helpers for curl and Python.
 - Includes right-click copy/cut/paste/select-all menus on Cockpit text controls.
 
@@ -38,7 +39,7 @@ Analysis tab:
 Prompt box
 [Send Chat] [Analyze] [Stop]
 Context counter
-Single chat transcript with flashing Thinking... indicator while waiting
+Single chat transcript with flashing Working... indicator while waiting
 Streaming final response transcript
 ```
 
@@ -58,6 +59,7 @@ The older standalone controls are gone:
 - No toolbar-level `Analyze` button.
 - No `Stream` checkbox. Streaming is always on.
 - No `Notes` checkbox. Notes always happen.
+- No toolbar target label.
 - No dedicated `Thinking preview` box.
 - No displayed reasoning text.
 - No `Host Note` button.
@@ -124,7 +126,7 @@ Expected streaming final content shape:
 {"choices":[{"delta":{"content":"text"}}]}
 ```
 
-Reasoning output, if your backend emits it, is intentionally ignored by the UI. The `Thinking` checkbox only changes the reasoning instruction sent to the model.
+Reasoning output, if your backend emits it, is intentionally ignored by the UI. The `Thinking` checkbox only changes the reasoning instruction sent to the model by adding `/think` or `/no_think` at the start of the prompt.
 
 ## RAG endpoint payload
 
