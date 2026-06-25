@@ -14,6 +14,7 @@ import java.awt.Component;
 import java.awt.Container;
 import java.awt.event.MouseAdapter;
 import java.awt.event.MouseEvent;
+import java.util.Objects;
 
 public final class TextContextMenu {
     private TextContextMenu() {}
@@ -111,6 +112,11 @@ public final class TextContextMenu {
             SwingUtilities.invokeLater(this::installClearChatButton);
         }
 
+        @Override
+        public void replaceRange(String str, int start, int end) {
+            super.replaceRange(cleanAssistantText(str), start, end);
+        }
+
         private void installClearChatButton() {
             if (clearButtonInstalled) {
                 return;
@@ -158,6 +164,82 @@ public final class TextContextMenu {
             buttons.revalidate();
             buttons.repaint();
             clearButtonInstalled = true;
+        }
+
+        private static String cleanAssistantText(String value) {
+            String text = Objects.toString(value, "").replace("\r\n", "\n").replace('\r', '\n');
+            if (text.isBlank()) {
+                return text;
+            }
+            StringBuilder out = new StringBuilder(text.length());
+            boolean inFence = false;
+            String[] lines = text.split("\n", -1);
+            for (String originalLine : lines) {
+                String line = originalLine;
+                String trimmed = line.trim();
+                if (trimmed.startsWith("```") || trimmed.startsWith("~~~")) {
+                    inFence = !inFence;
+                    out.append(line).append('\n');
+                    continue;
+                }
+                if (!inFence) {
+                    line = cleanMarkdownLine(line);
+                    if (isPlainHeading(line)) {
+                        appendBlankLineIfNeeded(out);
+                    }
+                }
+                out.append(line).append('\n');
+            }
+            String cleaned = out.toString()
+                    .replaceAll("\\n{4,}", "\n\n\n")
+                    .replaceAll("(?m)^\\s*[-*]\\s*$\\n", "")
+                    .stripTrailing();
+            return cleaned.isEmpty() ? "" : cleaned;
+        }
+
+        private static String cleanMarkdownLine(String line) {
+            String leading = leadingWhitespace(line);
+            String body = line.substring(leading.length());
+            body = body.replaceFirst("^#{1,6}\\s+", "");
+            body = body.replaceFirst("^[-*+]\\s+", "- ");
+            body = body.replaceAll("\\*\\*\\*(.+?)\\*\\*\\*", "$1");
+            body = body.replaceAll("___(.+?)___", "$1");
+            body = body.replaceAll("\\*\\*(.+?)\\*\\*", "$1");
+            body = body.replaceAll("__(.+?)__", "$1");
+            body = body.replaceAll("(?<!\\*)\\*([^*\\n]+)\\*(?!\\*)", "$1");
+            body = body.replaceAll("(?<!_)_([^_\\n]+)_(?!_)", "$1");
+            body = body.replaceAll("`([^`\\n]+)`", "$1");
+            return leading + body;
+        }
+
+        private static boolean isPlainHeading(String line) {
+            String trimmed = line.trim();
+            if (trimmed.isEmpty() || trimmed.startsWith("-") || trimmed.matches("^\\d+[.)].*")) {
+                return false;
+            }
+            return trimmed.endsWith(":") || trimmed.length() <= 64 && !trimmed.contains(".") && !trimmed.contains(";");
+        }
+
+        private static void appendBlankLineIfNeeded(StringBuilder out) {
+            int len = out.length();
+            if (len == 0) {
+                return;
+            }
+            if (len >= 2 && out.charAt(len - 1) == '\n' && out.charAt(len - 2) == '\n') {
+                return;
+            }
+            if (out.charAt(len - 1) != '\n') {
+                out.append('\n');
+            }
+            out.append('\n');
+        }
+
+        private static String leadingWhitespace(String value) {
+            int i = 0;
+            while (i < value.length() && Character.isWhitespace(value.charAt(i))) {
+                i++;
+            }
+            return value.substring(0, i);
         }
     }
 
