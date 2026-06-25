@@ -196,7 +196,10 @@ public final class TextContextMenu {
                         appendBlankLineIfNeeded(out);
                     }
                 }
-                out.append(line).append('\n');
+                out.append(line);
+                if (!line.endsWith("\n")) {
+                    out.append('\n');
+                }
             }
             String cleaned = out.toString()
                     .replaceAll("\\n{4,}", "\n\n\n")
@@ -251,13 +254,13 @@ public final class TextContextMenu {
                 }
                 if (isSectionLabel(clean)) {
                     appendBlankLineIfNeeded(shaped);
-                    shaped.append(clean).append('\n');
+                    shaped.append(clean).append("\n\n");
                 } else if (clean.startsWith("- ")) {
                     shaped.append("  ").append(clean).append('\n');
                 } else if (clean.matches("^\\d+[.)]\\s+.*")) {
-                    shaped.append(clean).append('\n');
+                    shaped.append(clean).append("\n\n");
                 } else {
-                    shaped.append(wrapChunk(clean, 96)).append('\n');
+                    shaped.append(wrapChunk(clean, 96)).append("\n\n");
                 }
             }
             return leading + shaped.toString().stripTrailing();
