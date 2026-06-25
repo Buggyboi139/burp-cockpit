@@ -54,7 +54,9 @@ public final class TextContextMenu {
     }
 
     public static JTextArea area(int rows, int cols, boolean editable) {
-        JTextArea area = new JTextArea(rows, cols);
+        JTextArea area = isPromptInput(rows, cols, editable)
+                ? new AutoClearingPromptArea(rows, cols)
+                : new JTextArea(rows, cols);
         area.setEditable(editable);
         area.setLineWrap(false);
         area.setWrapStyleWord(false);
@@ -73,6 +75,63 @@ public final class TextContextMenu {
             runnable.run();
         } else {
             SwingUtilities.invokeLater(runnable);
+        }
+    }
+
+    private static boolean isPromptInput(int rows, int cols, boolean editable) {
+        return editable && rows == 4 && cols == 70;
+    }
+
+    private static final class AutoClearingPromptArea extends JTextArea {
+        private String submittedPrompt = "";
+        private boolean submittedPromptAvailable;
+        private boolean autoClearing;
+
+        private AutoClearingPromptArea(int rows, int cols) {
+            super(rows, cols);
+        }
+
+        @Override
+        public String getText() {
+            String current = super.getText();
+            if (SwingUtilities.isEventDispatchThread()) {
+                if (current.isBlank()) {
+                    submittedPrompt = "";
+                    submittedPromptAvailable = false;
+                    return current;
+                }
+                submittedPrompt = current;
+                submittedPromptAvailable = true;
+                scheduleClearIfUnchanged(current);
+                return current;
+            }
+            if (current.isBlank() && submittedPromptAvailable) {
+                return submittedPrompt;
+            }
+            return current;
+        }
+
+        @Override
+        public void setText(String text) {
+            if (!autoClearing) {
+                submittedPrompt = "";
+                submittedPromptAvailable = false;
+            }
+            super.setText(text);
+        }
+
+        private void scheduleClearIfUnchanged(String submitted) {
+            SwingUtilities.invokeLater(() -> {
+                if (!super.getText().equals(submitted)) {
+                    return;
+                }
+                autoClearing = true;
+                try {
+                    super.setText("");
+                } finally {
+                    autoClearing = false;
+                }
+            });
         }
     }
 }
