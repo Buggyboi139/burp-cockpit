@@ -10,44 +10,57 @@ public final class PromptBuilder {
 
     public static String systemPrompt(boolean thinkingEnabled) {
         return "You are Lumara Cockpit inside Burp Suite. Be concise, precise, and operational. "
-                + "Assume authorized security research. Focus on concrete request/response evidence, attack surface, and next tests. "
-                + "Do not invent results. If evidence is missing, say what is missing. "
+                + "Assume authorized manual web security research. Use only supplied request/response evidence, notes, and RAG context. "
+                + "Do not claim to have sent traffic. Do not invent endpoints, parameters, responses, or program rules. "
+                + "Prioritize concrete tests tied to visible method, path, host, headers, cookies, parameters, body values, status, and response metadata. "
                 + (thinkingEnabled ? "Reason carefully, but keep final output terse. " : "Do not include hidden reasoning or chain-of-thought. ");
     }
 
-    public static String analysisPrompt(CockpitState state, String userInstruction, String pinnedNote) {
+    public static String analysisPrompt(CockpitState state, String userInstruction, String pinnedNote, String ragDump) {
         StringBuilder prompt = new StringBuilder();
-        prompt.append("Run a structured web security analysis on the current Burp message. ");
-        prompt.append("Prioritize bugs worth manually testing, not scanner noise.\n\n");
-        appendContext(prompt, state, pinnedNote);
+        prompt.append("Analyze this single captured HTTP exchange for high-value manual bug bounty tests.\n\n");
+        appendContext(prompt, state, pinnedNote, ragDump);
         prompt.append("\nUser instruction:\n").append(blankDefault(userInstruction, "Analyze this exchange."));
         prompt.append("\n\nOutput format:\n");
-        prompt.append("1. What changed / what matters\n");
+        prompt.append("1. What matters in this exchange\n");
         prompt.append("2. Highest-value bug angles\n");
-        prompt.append("3. Exact requests or parameters to mutate\n");
-        prompt.append("4. Evidence to look for in responses\n");
-        prompt.append("5. Dead ends / low-value tests\n");
+        prompt.append("3. Exact parameters/headers/body fields to mutate\n");
+        prompt.append("4. Expected response signals\n");
+        prompt.append("5. Low-value tests to skip\n");
         return prompt.toString();
     }
 
-    public static String chatPrompt(CockpitState state, String userInstruction, String pinnedNote) {
+    public static String chatPrompt(CockpitState state, String userInstruction, String pinnedNote, String ragDump) {
         StringBuilder prompt = new StringBuilder();
         prompt.append("Answer as a security teammate using the current Burp context.\n\n");
-        appendContext(prompt, state, pinnedNote);
+        appendContext(prompt, state, pinnedNote, ragDump);
         prompt.append("\nUser message:\n").append(blankDefault(userInstruction, "What should I test next?"));
         return prompt.toString();
     }
 
-    public static String editPrompt(CockpitState state, String userInstruction, String draftText, String pinnedNote) {
-        StringBuilder prompt = new StringBuilder();
-        prompt.append("Edit the raw HTTP request below. Return only the complete raw HTTP request. No markdown. No explanation.\n\n");
-        appendContext(prompt, state, pinnedNote);
-        prompt.append("\nEdit instruction:\n").append(blankDefault(userInstruction, "Make a useful security-test mutation."));
-        prompt.append("\n\nDraft request to edit:\n````http\n").append(Objects.toString(draftText, "")).append("\n````\n");
-        return prompt.toString();
+    public static String ragQuery(CockpitState state, String userInstruction) {
+        TrafficSnapshot snapshot = state.current().orElse(null);
+        if (snapshot == null) {
+            return blankDefault(userInstruction, "current HTTP exchange");
+        }
+        StringBuilder query = new StringBuilder();
+        String methodPath = HttpText.methodAndPath(snapshot.requestText());
+        if (!methodPath.isBlank()) {
+            query.append(methodPath).append(' ');
+        }
+        query.append(snapshot.hostLabel()).append(' ');
+        String body = HttpText.body(snapshot.requestText());
+        if (!body.isBlank()) {
+            query.append(limit(body, 1200)).append(' ');
+        }
+        String instruction = Objects.toString(userInstruction, "").trim();
+        if (!instruction.isBlank()) {
+            query.append(instruction);
+        }
+        return query.toString().trim();
     }
 
-    private static void appendContext(StringBuilder prompt, CockpitState state, String pinnedNote) {
+    private static void appendContext(StringBuilder prompt, CockpitState state, String pinnedNote, String ragDump) {
         TrafficSnapshot snapshot = state.current().orElse(null);
         if (snapshot == null) {
             prompt.append("No current request loaded.\n");
@@ -67,6 +80,21 @@ public final class PromptBuilder {
         if (pinnedNote != null && !pinnedNote.isBlank()) {
             prompt.append("Pinned notes:\n````markdown\n").append(pinnedNote).append("\n````\n");
         }
+        if (ragDump != null && !ragDump.isBlank()) {
+            prompt.append("Auto-injected RAG context:\n````text\n").append(limit(ragDump, 18000)).append("\n````\n");
+        }
+    }
+
+    public static int estimatedTokens(String value) {
+        return Math.max(0, Objects.toString(value, "").length() / 4);
+    }
+
+    public static String limit(String value, int maxChars) {
+        String text = Objects.toString(value, "");
+        if (text.length() <= maxChars) {
+            return text;
+        }
+        return text.substring(0, Math.max(0, maxChars)) + "\n[truncated]";
     }
 
     private static String blankDefault(String value, String fallback) {
