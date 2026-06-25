@@ -556,7 +556,10 @@ public final class CockpitPanel extends JPanel {
             return;
         }
         if (activeNoteName.isBlank()) {
-            String fallback = currentNoteName();
+            String fallback = noteSaveSourceName();
+            if (fallback.isBlank()) {
+                fallback = currentNoteName();
+            }
             if (fallback.isBlank()) {
                 fallback = "DEFAULT";
             }
@@ -603,7 +606,7 @@ public final class CockpitPanel extends JPanel {
         if (!text.isBlank()) {
             return text;
         }
-        String name = activeNoteName.isBlank() ? currentNoteName() : activeNoteName;
+        String name = activeNoteName.isBlank() ? noteSaveSourceName() : activeNoteName;
         return name.isBlank() ? "" : notesStore.read(name);
     }
 
@@ -616,7 +619,7 @@ public final class CockpitPanel extends JPanel {
     }
 
     private void refreshNoteList() {
-        String selected = activeNoteName.isBlank() ? currentNoteName() : activeNoteName;
+        String selected = activeNoteName.isBlank() ? noteSaveSourceName() : activeNoteName;
         suppressNoteEvents = true;
         noteSelector.removeAllItems();
         List<String> names = notesStore.listNoteNames();
@@ -704,24 +707,24 @@ public final class CockpitPanel extends JPanel {
     }
 
     private void saveSelectedNote() {
-        String name = currentNoteName();
-        if (name.isBlank()) {
-            name = activeNoteName.isBlank() ? "DEFAULT" : activeNoteName;
+        String targetName = currentNoteName();
+        String sourceName = noteSaveSourceName();
+        if (targetName.isBlank()) {
+            targetName = sourceName.isBlank() ? "DEFAULT" : sourceName;
         }
         try {
-            String previousName = activeNoteName;
-            if (!previousName.isBlank() && !previousName.equals(name)) {
-                notesStore.write(previousName, notesArea.getText());
-                name = notesStore.rename(previousName, name);
-                setStatus("Renamed note: " + previousName + " -> " + name);
+            if (!sourceName.isBlank() && !sourceName.equals(targetName) && notesStore.exists(sourceName)) {
+                notesStore.write(sourceName, notesArea.getText());
+                targetName = notesStore.rename(sourceName, targetName);
+                setStatus("Renamed note: " + sourceName + " -> " + targetName);
             } else {
-                notesStore.write(name, notesArea.getText());
-                setStatus("Saved note locally: " + name);
+                notesStore.write(targetName, notesArea.getText());
+                setStatus("Saved note locally: " + targetName);
             }
-            activeNoteName = name;
+            activeNoteName = targetName;
             refreshNoteList();
-            selectNote(name);
-            state.pinnedNoteName(name);
+            selectNote(targetName);
+            state.pinnedNoteName(targetName);
             updateContextCounter();
         } catch (Throwable throwable) {
             showError("Failed to save note", throwable);
@@ -729,7 +732,7 @@ public final class CockpitPanel extends JPanel {
     }
 
     private void quietSaveActiveNote() {
-        String name = activeNoteName;
+        String name = noteSaveSourceName();
         if (name.isBlank()) {
             name = currentNoteName();
         }
@@ -745,12 +748,37 @@ public final class CockpitPanel extends JPanel {
         }
     }
 
+    private String noteSaveSourceName() {
+        String active = NotesStore.sanitizeName(activeNoteName);
+        if (!active.isBlank() && notesStore.exists(active)) {
+            return active;
+        }
+        String pinned = NotesStore.sanitizeName(state.pinnedNoteName());
+        if (!pinned.isBlank() && notesStore.exists(pinned)) {
+            return pinned;
+        }
+        String selected = selectedListNoteName();
+        if (!selected.isBlank() && notesStore.exists(selected)) {
+            return selected;
+        }
+        String combo = selectedComboNoteName();
+        if (!combo.isBlank() && notesStore.exists(combo)) {
+            return combo;
+        }
+        return "";
+    }
+
     private String currentNoteName() {
         String typedName = NotesStore.sanitizeName(noteNameField.getText());
         if (!typedName.isBlank()) {
             return typedName;
         }
         return selectedComboNoteName();
+    }
+
+    private String selectedListNoteName() {
+        Object selected = noteSelector.getSelectedItem();
+        return NotesStore.sanitizeName(Objects.toString(selected, ""));
     }
 
     private String selectedComboNoteName() {
