@@ -84,7 +84,7 @@ public final class TextContextMenu {
             area = new JTextArea(rows, cols);
         }
         area.setEditable(editable);
-        if (isChatTranscript(rows, cols, editable)) {
+        if (isChatTranscript(rows, cols, editable) || isRequestEditor(rows, cols, editable) || isResponseViewer(rows, cols, editable)) {
             area.setLineWrap(true);
             area.setWrapStyleWord(true);
         } else {
@@ -119,6 +119,10 @@ public final class TextContextMenu {
 
     private static boolean isRequestEditor(int rows, int cols, boolean editable) {
         return editable && rows == 24 && cols == 90;
+    }
+
+    private static boolean isResponseViewer(int rows, int cols, boolean editable) {
+        return !editable && rows == 12 && cols == 90;
     }
 
     private static final class RequestEditorArea extends JTextArea {
@@ -832,7 +836,7 @@ public final class TextContextMenu {
             for (Component child : container.getComponents()) {
                 JButton found = findButtonRecursive(child, text);
                 if (found != null) {
-                    return found;
+                    return button;
                 }
             }
         }
