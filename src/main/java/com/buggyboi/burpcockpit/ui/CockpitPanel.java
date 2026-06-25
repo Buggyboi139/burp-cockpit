@@ -641,12 +641,19 @@ public final class CockpitPanel extends JPanel {
             name = activeNoteName.isBlank() ? "DEFAULT" : activeNoteName;
         }
         try {
-            notesStore.write(name, notesArea.getText());
+            String previousName = activeNoteName;
+            if (!previousName.isBlank() && !previousName.equals(name)) {
+                notesStore.write(previousName, notesArea.getText());
+                name = notesStore.rename(previousName, name);
+                setStatus("Renamed note: " + previousName + " -> " + name);
+            } else {
+                notesStore.write(name, notesArea.getText());
+                setStatus("Saved note locally: " + name);
+            }
             activeNoteName = name;
             refreshNoteList();
             selectNote(name);
             state.pinnedNoteName(name);
-            setStatus("Saved note locally: " + name);
             updateContextCounter();
         } catch (Throwable throwable) {
             showError("Failed to save note", throwable);
