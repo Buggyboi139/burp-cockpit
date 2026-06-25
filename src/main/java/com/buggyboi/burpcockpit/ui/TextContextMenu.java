@@ -2,6 +2,7 @@ package com.buggyboi.burpcockpit.ui;
 
 import javax.swing.AbstractAction;
 import javax.swing.JButton;
+import javax.swing.JEditorPane;
 import javax.swing.JLabel;
 import javax.swing.JMenuItem;
 import javax.swing.JPanel;
@@ -15,6 +16,7 @@ import javax.swing.text.JTextComponent;
 import java.awt.BorderLayout;
 import java.awt.Component;
 import java.awt.Container;
+import java.awt.Dimension;
 import java.awt.event.ActionEvent;
 import java.awt.event.MouseAdapter;
 import java.awt.event.MouseEvent;
@@ -22,6 +24,7 @@ import java.lang.reflect.Array;
 import java.lang.reflect.Field;
 import java.lang.reflect.Method;
 import java.net.URI;
+import java.time.Instant;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -83,6 +86,12 @@ public final class TextContextMenu {
         return area;
     }
 
+    public static ChatTranscriptPane transcript(int rows, int cols) {
+        ChatTranscriptPane pane = new ChatTranscriptPane(rows, cols);
+        install(pane);
+        return pane;
+    }
+
     public static JTextField field(String text) {
         JTextField field = new JTextField(text == null ? "" : text);
         install(field);
@@ -109,6 +118,149 @@ public final class TextContextMenu {
     private static boolean isResponseViewer(int rows, int cols, boolean editable) {
         return !editable && rows == 12 && cols == 90;
     }
+
+    public static final class ChatTranscriptPane extends JEditorPane {
+        private final List<ChatCard> cards = new ArrayList<>();
+        private int activeAssistantIndex = -1;
+        private boolean rendering;
+
+        private ChatTranscriptPane(int rows, int cols) {
+            setContentType("text/html");
+            setEditable(false);
+            putClientProperty(JEditorPane.HONOR_DISPLAY_PROPERTIES, Boolean.TRUE);
+            setPreferredScrollableViewportSize(new Dimension(cols * 8, rows * 18));
+            render();
+        }
+
+        public void startTurn(String userRole, String userPrompt, boolean analysis) {
+            activeAssistantIndex = -1;
+            cards.add(new ChatCard(userRole, Objects.toString(userPrompt, "").trim(), analysis));
+            cards.add(new ChatCard(analysis ? "Analyze" : "Assistant", "", analysis));
+            activeAssistantIndex = cards.size() - 1;
+            render();
+        }
+
+        public void appendAssistantText(String text) {
+            if (activeAssistantIndex < 0 || activeAssistantIndex >= cards.size()) {
+                cards.add(new ChatCard("Assistant", "", false));
+                activeAssistantIndex = cards.size() - 1;
+            }
+            ChatCard card = cards.get(activeAssistantIndex);
+            cards.set(activeAssistantIndex, new ChatCard(card.role(), card.content() + Objects.toString(text, ""), card.analysis()));
+            render();
+        }
+
+        public void replaceActiveAssistantText(String text) {
+            if (activeAssistantIndex < 0 || activeAssistantIndex >= cards.size()) {
+                cards.add(new ChatCard("Assistant", Objects.toString(text, ""), false));
+                activeAssistantIndex = cards.size() - 1;
+            } else {
+                ChatCard card = cards.get(activeAssistantIndex);
+                cards.set(activeAssistantIndex, new ChatCard(card.role(), Objects.toString(text, ""), card.analysis()));
+            }
+            render();
+        }
+
+        public void clearTranscript() {
+            cards.clear();
+            activeAssistantIndex = -1;
+            render();
+        }
+
+        @Override public void setText(String text) {
+            if (!rendering && (text == null || text.isBlank())) {
+                clearTranscript();
+                return;
+            }
+            super.setText(text);
+        }
+
+        @Override public String getText() {
+            if (cards.isEmpty()) return "";
+            StringBuilder out = new StringBuilder();
+            for (ChatCard card : cards) {
+                if (!out.isEmpty()) out.append("\n\n");
+                out.append(card.role()).append("\n").append(card.content());
+            }
+            return out.toString();
+        }
+
+        private void render() {
+            StringBuilder html = new StringBuilder(4096);
+            html.append("<html><head><style>")
+                    .append("body{font-family:sans-serif;font-size:12px;background:#1f1f1f;color:#d7d7d7;margin:6px;}")
+                    .append(".card{border:1px solid #444;margin:0 0 10px 0;padding:10px;background:#2b2b2b;}")
+                    .append(".assistant{background:#303336;}")
+                    .append(".analyze{border-color:#806000;background:#343024;}")
+                    .append(".role{color:#afb1b3;font-weight:bold;margin-bottom:6px;}")
+                    .append("pre{background:#1b1b1b;border:1px solid #3d3d3d;padding:6px;white-space:pre-wrap;}")
+                    .append("code{font-family:monospaced;}")
+                    .append("</style></head><body>");
+            for (ChatCard card : cards) {
+                String kind = card.analysis() ? "card analyze" : "Assistant".equals(card.role()) ? "card assistant" : "card";
+                html.append("<div class='").append(kind).append("'>");
+                html.append("<div class='role'>").append(escape(card.role())).append(" • ").append(escape(Instant.now().toString())).append("</div>");
+                html.append(markdownToHtml(card.content()));
+                html.append("</div>");
+            }
+            html.append("</body></html>");
+            rendering = true;
+            try {
+                super.setText(html.toString());
+                setCaretPosition(getDocument().getLength());
+            } finally {
+                rendering = false;
+            }
+        }
+
+        private static String markdownToHtml(String content) {
+            String text = Objects.toString(content, "").replace("\r\n", "\n").replace('\r', '\n');
+            if (text.isBlank()) return "<div>&nbsp;</div>";
+            StringBuilder out = new StringBuilder(text.length() + 128);
+            boolean inFence = false;
+            for (String raw : text.split("\n", -1)) {
+                String line = raw.trim();
+                if (line.startsWith("```") || line.startsWith("~~~")) {
+                    if (inFence) out.append("</code></pre>");
+                    else out.append("<pre><code>");
+                    inFence = !inFence;
+                    continue;
+                }
+                if (inFence) {
+                    out.append(escape(raw)).append("\n");
+                } else if (line.isBlank()) {
+                    out.append("<br>");
+                } else if (line.startsWith("#")) {
+                    out.append("<b>").append(escape(line.replaceFirst("^#{1,6}\\s*", ""))).append("</b><br>");
+                } else if (line.startsWith("- ") || line.startsWith("* ")) {
+                    out.append("&#8226; ").append(inlineMarkdown(line.substring(2))).append("<br>");
+                } else {
+                    out.append(inlineMarkdown(raw)).append("<br>");
+                }
+            }
+            if (inFence) out.append("</code></pre>");
+            return out.toString();
+        }
+
+        private static String inlineMarkdown(String value) {
+            String escaped = escape(value);
+            escaped = escaped.replaceAll("`([^`]+)`", "<code>$1</code>");
+            escaped = escaped.replaceAll("\\*\\*([^*]+)\\*\\*", "<b>$1</b>");
+            escaped = escaped.replaceAll("__([^_]+)__", "<b>$1</b>");
+            escaped = escaped.replaceAll("(?<!\\*)\\*([^*]+)\\*(?!\\*)", "<i>$1</i>");
+            return escaped;
+        }
+
+        private static String escape(String value) {
+            return Objects.toString(value, "")
+                    .replace("&", "&amp;")
+                    .replace("<", "&lt;")
+                    .replace(">", "&gt;")
+                    .replace("\"", "&quot;");
+        }
+    }
+
+    private record ChatCard(String role, String content, boolean analysis) {}
 
     private static final class RequestEditorArea extends JTextArea {
         private static final String REFRESH_COOKIES_BUTTON_NAME = "burp-cockpit-refresh-cookies";
@@ -197,7 +349,7 @@ public final class TextContextMenu {
                 return out;
             }
             if (result.getClass().isArray()) {
-                for (int i = 0; i < Array.getLength(result); i++) out.add(Array.get(result, i));
+                for (int i = 0; i < Array.getLength(result); i++) out.add(result);
                 return out;
             }
             throw new IllegalStateException("Montoya cookie jar returned unsupported type: " + result.getClass().getName());
@@ -317,53 +469,14 @@ public final class TextContextMenu {
     }
 
     private static final class ChatTranscriptArea extends JTextArea {
-        private static final String CLEAR_CHAT_BUTTON_NAME = "burp-cockpit-clear-chat";
-        private boolean clearButtonInstalled;
-
         private ChatTranscriptArea(int rows, int cols) {
             super(rows, cols);
             setLineWrap(true);
             setWrapStyleWord(true);
         }
 
-        @Override public void addNotify() {
-            super.addNotify();
-            SwingUtilities.invokeLater(this::installClearChatButton);
-        }
-
         @Override public void replaceRange(String str, int start, int end) {
             super.replaceRange(cleanAssistantText(str), start, end);
-        }
-
-        private void installClearChatButton() {
-            if (clearButtonInstalled) return;
-            Container viewport = getParent();
-            Container scroll = viewport == null ? null : viewport.getParent();
-            Container center = scroll == null ? null : scroll.getParent();
-            if (!(center instanceof JPanel centerPanel) || !(centerPanel.getLayout() instanceof BorderLayout centerLayout)) return;
-            Container analysis = centerPanel.getParent();
-            if (!(analysis instanceof JPanel analysisPanel) || !(analysisPanel.getLayout() instanceof BorderLayout analysisLayout)) return;
-            Component top = analysisLayout.getLayoutComponent(BorderLayout.NORTH);
-            if (!(top instanceof JPanel topPanel) || !(topPanel.getLayout() instanceof BorderLayout topLayout)) return;
-            Component controls = topLayout.getLayoutComponent(BorderLayout.SOUTH);
-            if (!(controls instanceof JPanel buttons)) return;
-            for (Component component : buttons.getComponents()) {
-                if (CLEAR_CHAT_BUTTON_NAME.equals(component.getName())) {
-                    clearButtonInstalled = true;
-                    return;
-                }
-            }
-            JButton clearChat = new JButton("Clear Chat");
-            clearChat.setName(CLEAR_CHAT_BUTTON_NAME);
-            clearChat.addActionListener(e -> {
-                setText("");
-                Component status = centerLayout.getLayoutComponent(BorderLayout.SOUTH);
-                if (status instanceof JLabel label) label.setText("Chat cleared.");
-            });
-            buttons.add(clearChat);
-            buttons.revalidate();
-            buttons.repaint();
-            clearButtonInstalled = true;
         }
 
         private static String cleanAssistantText(String value) {
