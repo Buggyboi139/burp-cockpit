@@ -9,19 +9,19 @@ Burp Cockpit is a Burp Suite Community/Professional Montoya extension that ports
 - Opens selected request/response pairs in Cockpit.
 - Lets you edit and resend HTTP requests through Burp's own HTTP stack.
 - Keeps bounded request iteration history with back/forward controls.
-- Adds `Clear Cache` to collapse history back to the current visible request/response, clear RAG/delta context, and keep the active local note.
+- Adds `Clear Cache` to collapse history back to the current visible request/response and clear RAG/delta context while preserving the active local note.
 - Provides the current Cockpit layout: request editor, response viewer, right-side `Analysis` and `Notes` tabs.
-- Streams final AI responses live into the chat transcript area.
+- Streams final AI responses live into a card-rendered transcript.
 - Uses the `Thinking` checkbox only as a reasoning-behavior toggle.
 - Sends explicit `/think` or `/no_think` control hints with each AI prompt.
 - Shows a temporary flashing `Working...` indicator in the chat box while waiting for final content.
 - Does not display, store, append, or re-inject reasoning text.
-- Supports automatic scoped RAG injection when the `RAG` toggle is enabled.
-- Keeps notes local to Kali under `~/.burp-cockpit/notes/`.
+- Supports scoped RAG injection only when the `RAG` toggle is enabled.
+- Keeps notes local under `~/.burp-cockpit/notes/`.
 - Auto-loads or creates the current host note when a request is opened.
-- Always includes the active local note in AI context with a flat first-10k-token cap.
-- Gives the model a local note append channel using `[[COCKPIT_NOTE]] ... [[/COCKPIT_NOTE]]` blocks.
-- Strips note blocks out of visible chat and appends their contents to the active local note.
+- Includes the active local note in AI context only when the `Notes` toggle is enabled.
+- Treats notes and RAG as read-only AI context.
+- Never lets model output write to disk. Only the user-facing Notes tab writes notes.
 - Keeps the target label out of the toolbar so long paths stay in the request editor where they belong.
 - Keeps the token selector fixed-width so it does not eat the toolbar like a deranged UI parasite.
 - Includes export helpers for curl and Python.
@@ -32,18 +32,17 @@ Burp Cockpit is a Burp Suite Community/Professional Montoya extension that ports
 Toolbar:
 
 ```text
-[New] [←] [→] [Send] [Clear Cache] [Export curl] [Export Python] [Hide Right Pane] [Settings]
+[New] [←] [→] [Send] [Refresh Cookies] [Clear Cache] [Export curl] [Export Python] [Hide Right Pane] [Settings]
 Tokens [1k|2k|20k|96k] [Thinking] [Delta only] [RAG]
 ```
 
 Analysis tab:
 
 ```text
+Mode/context badge
+HTML card transcript
 Prompt box
-[Send Chat] [Analyze] [Stop]
-Context counter based on capped prompt context
-Single chat transcript with flashing Working... indicator while waiting
-Streaming final response transcript
+[Notes] [RAG] [Send Chat] [Analyze] [Stop] [Clear Chat]
 ```
 
 Notes tab:
@@ -56,42 +55,58 @@ Editable note name field
 Local Markdown note editor
 ```
 
-## Model note append channel
+## V1.5 context behavior
 
-The prompt sent to the model includes a local note append channel:
+Chat and Analyze intentionally use different prompt builders. This is the entire point, because apparently if you let a model eat every byte forever it turns into a fog machine with syntax highlighting.
+
+Chat mode:
 
 ```text
-[[COCKPIT_NOTE]]
-Markdown to append. Keep it concise. Do not include full chat history.
-[[/COCKPIT_NOTE]]
+Target host
+Request method/path
+Essential headers only
+Response status/first line
+First 500 chars of response body
+Optional read-only notes
+Optional read-only RAG
 ```
 
-When the model emits one or more of those blocks, Cockpit removes the block from the visible chat transcript and appends the contents to the bottom of the active local note under a timestamped `Model note` heading. Notes stay local in Kali. This is deliberately boring because boring usually survives contact with Java desktop software.
+Analyze mode:
+
+```text
+Full capped request context
+Full capped response context
+Optional request delta
+Optional read-only notes
+Optional read-only RAG
+Structured security-audit output contract
+```
 
 ## Context caps
 
 The editor panes keep the full visible request/response, but the AI context and counter use capped prompt material:
 
 ```text
-Request:  first ~4k tokens + last ~4k tokens
-Response: first ~4k tokens + last ~4k tokens
-Notes:    first ~10k tokens
-RAG:      first ~4k tokens + last ~4k tokens
+Analyze request:  first ~4k tokens + last ~4k tokens
+Analyze response: first ~4k tokens + last ~4k tokens
+Analyze notes:    first ~10k tokens, only when Notes is enabled
+Analyze RAG:      first ~4k tokens + last ~4k tokens, only when RAG is enabled
+Chat response:    first 500 chars of response body
+Chat notes:       first ~1.2k tokens, only when Notes is enabled
+Chat RAG:         first ~1.4k tokens, only when RAG is enabled
 ```
-
-This keeps the model from being force-fed some surprise mega-body just because a web app coughed up a weird response. Humanity invented limits because apparently it had to.
 
 ## What `Clear Cache` does
 
 `Clear Cache` does not delete notes or clear the visible request/response. It:
 
-- saves the current local note
+- saves the current local note from the Notes tab
 - keeps the current visible request and response
 - keeps the active note selected
 - clears the last RAG dump
 - resets the delta baseline
 - collapses request history to one current exchange
-- recalculates context from current request, response, and note only
+- recalculates context from current request, response, and opt-in notes/RAG only
 
 ## What it intentionally does not include
 
@@ -100,7 +115,9 @@ The older standalone controls are gone:
 - No `Import Raw` button.
 - No toolbar-level `Analyze` button.
 - No `Stream` checkbox. Streaming is always on.
-- No `Notes` checkbox. Notes always happen.
+- No forced `Notes` context. Notes are opt-in for AI prompts.
+- No model note append channel.
+- No AI-generated writes into local notes.
 - No toolbar target label.
 - No dedicated `Thinking preview` box.
 - No displayed reasoning text.
@@ -133,7 +150,7 @@ GitHub Actions builds the JAR on push and exposes it as the `burp-cockpit-jar` a
 ## Load in Burp
 
 1. Open Burp.
-2. Go to `Extensions` → `Installed` → `Add`.
+2. Go to `Extensions` -> `Installed` -> `Add`.
 3. Extension type: `Java`.
 4. Select `build/libs/burp-cockpit-0.1.0.jar`.
 5. Extension class name: `Extension` if Burp asks.
@@ -198,24 +215,4 @@ Notes are Markdown files. The extension creates a default note per current host,
 
 ```text
 google.com.md
-calendar.google.com.md
-script.google.com.md
 ```
-
-The note dropdown and name field are editable. Typing a new note name and pressing `Save` renames the active local Markdown note. `New Note` creates a separate note.
-
-## Common failure: Burp HTML error from AI call
-
-If you see:
-
-```text
-Invalid client request received: First line of request did not contain an absolute URL
-```
-
-then the chat endpoint is pointed at Burp's proxy listener. In the Kali VM, use:
-
-```text
-http://10.0.2.2:8080/v1/chat/completions
-```
-
-Or move Burp's proxy listener off port 8080 and use your real local endpoint. Software: still somehow mostly plumbing.
