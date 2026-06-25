@@ -1,6 +1,6 @@
 # Burp Cockpit
 
-Burp Cockpit is a Burp Suite Community/Professional Montoya extension that ports the current ZAP Cockpit workflow into Burp without keeping the old ZAP-specific add-on skeleton around like a haunted basement appliance.
+Burp Cockpit is a Burp Suite Community/Professional Montoya extension that ports the current Cockpit workflow into Burp without dragging along the old ZAP-specific add-on skeleton or the earlier button-farm experiments.
 
 ## What it does
 
@@ -10,16 +10,54 @@ Burp Cockpit is a Burp Suite Community/Professional Montoya extension that ports
 - Lets you edit and resend HTTP requests through Burp's own HTTP stack.
 - Keeps bounded request iteration history with back/forward controls.
 - Provides the current Cockpit layout: request editor, response viewer, right-side `Analysis` and `Notes` tabs.
-- Supports streaming local AI chat and analysis against the current request/response exchange.
+- Streams final AI responses live into the transcript area.
+- When `Thinking` is enabled, streams temporary reasoning into a two-line preview, then clears it when the final response begins.
 - Supports automatic scoped RAG injection when the `RAG` toggle is enabled.
-- Supports local notes per host/domain, pinned-note context injection, and saving notes into scoped Lumara RAG.
+- Keeps notes local to Kali under `~/.burp-cockpit/notes/`.
+- Auto-loads or creates the current host note when a request is opened.
+- Always includes the active local note in AI context.
+- Appends Analyze output into the active local note.
 - Includes export helpers for curl and Python.
 - Includes right-click copy/cut/paste/select-all menus on Cockpit text controls.
 
+## Current UI
+
+Toolbar:
+
+```text
+[New] [←] [→] [Send] [Export curl] [Export Python] [Hide Right Pane] [Settings]
+Tokens [1k|2k|20k|96k] [Thinking] [Delta only] [RAG]
+```
+
+Analysis tab:
+
+```text
+Prompt box
+[Send Chat] [Analyze] [Stop]
+Context counter
+Temporary 2-line thinking preview
+Streaming final response transcript
+```
+
+Notes tab:
+
+```text
+Editable note dropdown
+[Load] [Save] [Refresh]
+Local Markdown note editor
+```
+
 ## What it intentionally does not include
 
-The older standalone buttons are gone:
+The older standalone controls are gone:
 
+- No `Import Raw` button.
+- No toolbar-level `Analyze` button.
+- No `Stream` checkbox. Streaming is always on.
+- No `Notes` checkbox. Notes always happen.
+- No `Host Note` button.
+- No `Pin` button.
+- No `Ingest Notes` button.
 - No standalone `Search RAG` button.
 - No standalone `Payload Ideas` button.
 - No AI draft/edit workflow separate from the main request editor.
@@ -64,24 +102,30 @@ http://10.0.2.2:8080/v1/chat/completions
 RAG search endpoint:
 
 ```text
-http://10.0.2.2:8765/rag/search
+http://10.0.2.2:5000/rag/search
 ```
 
 Change these with the Cockpit `Settings` button if your model/RAG server lives somewhere else.
 
 ## Expected chat backend
 
-The chat client speaks OpenAI-compatible `/v1/chat/completions` JSON and supports streaming SSE responses.
+The chat client speaks OpenAI-compatible `/v1/chat/completions` JSON and expects streaming SSE responses.
 
 The extension forces direct HTTP/1.1 and disables JVM proxy selection for Lumara calls so the AI request does not get accidentally sent into Burp's proxy listener.
 
-Expected streaming response shape:
+Expected streaming final content shape:
 
 ```json
 {"choices":[{"delta":{"content":"text"}}]}
 ```
 
-It also handles non-streaming `message.content` responses.
+Expected optional thinking shape:
+
+```json
+{"choices":[{"delta":{"reasoning_content":"thinking"}}]}
+```
+
+The thinking preview is display-only. It is not appended to notes, retained in transcript history, or injected into future context.
 
 ## RAG endpoint payload
 
@@ -97,7 +141,7 @@ RAG search POST body:
 }
 ```
 
-Notes save payloads use `scope: notes` and include `target_uri`, `note_path`, and `ingest: true`.
+RAG is read-only from Burp Cockpit. Burp notes are not saved into RAG and are not ingested into OpenLumara knowledge.
 
 ## Notes
 
@@ -115,7 +159,7 @@ calendar.google.com.md
 script.google.com.md
 ```
 
-Pinned notes are injected into AI prompts when `Notes` is enabled. Scoped RAG context is injected when `RAG` is enabled.
+The note dropdown is editable. Typing a new note name and pressing `Save` creates or updates that local Markdown note.
 
 ## Common failure: Burp HTML error from AI call
 
