@@ -27,19 +27,19 @@ public final class PromptBuilder {
 
     public static String systemPrompt(boolean thinkingEnabled, boolean analysis) {
         String thinking = thinkingEnabled
-                ? "Reasoning mode is enabled. Think internally if useful, but keep the final answer terse and actionable. "
-                : "Reasoning mode is disabled. Do not think step-by-step. Do not narrate reasoning. Start the final answer directly and keep it terse. ";
+                ? "Reasoning mode is enabled. Think internally if useful, but keep the final answer useful and compact. "
+                : "Reasoning mode is disabled. Do not think step-by-step. Do not narrate reasoning. Start the final answer directly. ";
         if (!analysis) {
             return "You are Lumara Cockpit inside Burp Suite, acting as a concise HTTP testing teammate. "
-                    + "Answer the user's latest message directly. Do not write notes. Do not claim to save, update, or append notes. "
-                    + "Do not summarize the request unless it is necessary. Start with the next concrete test when possible. "
-                    + "Use short headings and dash bullets. Keep the answer under 200 words unless the user asks for depth. "
-                    + "Use Burp request/response, notes, and RAG only when they directly help answer the user. "
-                    + "Do not claim to have sent traffic. Do not invent endpoints, parameters, responses, or program rules. "
+                    + "Answer the user's latest message directly. No summary unless required. No notes. Max 200 words unless the user asks for depth. "
+                    + "Use only the supplied minimal HTTP snippet, optional read-only notes, and optional read-only RAG when they directly help. "
+                    + "Do not claim to have saved notes, sent traffic, changed state, or tested anything outside the visible exchange. "
+                    + "Do not invent endpoints, parameters, responses, credentials, or program rules. "
                     + thinking;
         }
-        return "You are Lumara Cockpit inside Burp Suite, acting as a senior manual web security tester. "
-                + "Analyze the supplied HTTP exchange for high-value manual bug bounty tests. "
+        return "You are Lumara Cockpit inside Burp Suite, acting as a senior manual web security auditor. "
+                + "Perform a deep dive using the supplied full request/response, optional read-only notes, and optional read-only RAG. "
+                + "Produce a structured report with concrete manual Burp mutations and visible evidence. "
                 + "Do not write notes. Do not claim to save, update, or append notes. Do not claim to have sent traffic. "
                 + "Tie claims to visible method, path, host, headers, cookies, parameters, body values, status, and response metadata. "
                 + "Use short headings and dash bullets. No tables. No giant paragraphs. "
@@ -104,6 +104,43 @@ public final class PromptBuilder {
         return query.toString().trim();
     }
 
+    public static String buildChatContext(TrafficSnapshot snapshot) {
+        if (snapshot == null) return "No current request loaded.\n";
+        String request = snapshot.requestText();
+        String response = snapshot.responseText();
+        StringBuilder out = new StringBuilder();
+        out.append("Context mode: CHAT_MINIMAL\n");
+        out.append("Target: ").append(snapshot.hostLabel()).append("\n");
+        String methodPath = HttpText.methodAndPath(request);
+        if (!methodPath.isBlank()) out.append("Request: ").append(methodPath).append("\n");
+        appendHeader(out, request, "Host");
+        appendHeader(out, request, "Authorization");
+        appendHeader(out, request, "Cookie");
+        appendHeader(out, request, "Content-Type");
+        appendHeader(out, request, "Origin");
+        appendHeader(out, request, "Referer");
+        if (!response.isBlank()) {
+            out.append("Response: ").append(firstLine(response)).append("\n");
+            String responseBody = HttpText.body(response);
+            if (!responseBody.isBlank()) {
+                out.append("Response excerpt:\n").append(limit(responseBody, CHAT_RESPONSE_EXCERPT_CHARS)).append("\n");
+            }
+        }
+        return out.toString();
+    }
+
+    public static String buildAnalyzeContext(TrafficSnapshot snapshot) {
+        if (snapshot == null) return "No current request loaded.\n";
+        StringBuilder out = new StringBuilder();
+        out.append("Context mode: ANALYZE_FULL\n");
+        out.append("Current target: ").append(HttpText.shortSummary(snapshot.requestText(), snapshot.service())).append("\n");
+        out.append("Current request:\n````http\n").append(requestContext(snapshot.requestText())).append("\n````\n");
+        if (!snapshot.responseText().isBlank()) {
+            out.append("Current response:\n````http\n").append(responseContext(snapshot.responseText())).append("\n````\n");
+        }
+        return out.toString();
+    }
+
     private static void appendThinkingControl(StringBuilder prompt, boolean thinkingEnabled) {
         if (thinkingEnabled) {
             prompt.append("/think\n");
@@ -123,31 +160,7 @@ public final class PromptBuilder {
 
     private static void appendChatContext(StringBuilder prompt, CockpitState state, String pinnedNote, String ragDump) {
         TrafficSnapshot snapshot = state.current().orElse(null);
-        if (snapshot == null) {
-            prompt.append("No current request loaded.\n");
-            return;
-        }
-        String request = snapshot.requestText();
-        String response = snapshot.responseText();
-        prompt.append("Context mode: CHAT_MINIMAL\n");
-        prompt.append("Current target: ").append(HttpText.shortSummary(request, snapshot.service())).append("\n");
-        String methodPath = HttpText.methodAndPath(request);
-        if (!methodPath.isBlank()) {
-            prompt.append("Request: ").append(methodPath).append("\n");
-        }
-        appendHeader(prompt, request, "Host");
-        appendHeader(prompt, request, "Authorization");
-        appendHeader(prompt, request, "Cookie");
-        appendHeader(prompt, request, "Content-Type");
-        appendHeader(prompt, request, "Origin");
-        appendHeader(prompt, request, "Referer");
-        if (!response.isBlank()) {
-            prompt.append("Response: ").append(firstLine(response)).append("\n");
-            String responseBody = HttpText.body(response);
-            if (!responseBody.isBlank()) {
-                prompt.append("Response excerpt:\n").append(limit(responseBody, CHAT_RESPONSE_EXCERPT_CHARS)).append("\n");
-            }
-        }
+        prompt.append(buildChatContext(snapshot));
         if (pinnedNote != null && !pinnedNote.isBlank()) {
             prompt.append("Read-only notes:\n````markdown\n").append(firstTokens(pinnedNote, CHAT_NOTES_TOKENS)).append("\n````\n");
         }
@@ -159,18 +172,17 @@ public final class PromptBuilder {
     private static void appendAnalyzeContext(StringBuilder prompt, CockpitState state, String pinnedNote, String ragDump) {
         TrafficSnapshot snapshot = state.current().orElse(null);
         if (snapshot == null) {
-            prompt.append("No current request loaded.\n");
+            prompt.append(buildAnalyzeContext(null));
             return;
         }
-        String currentRequest = snapshot.requestText();
         prompt.append("Context mode: ANALYZE_FULL\n");
-        prompt.append("Current target: ").append(HttpText.shortSummary(currentRequest, snapshot.service())).append("\n");
+        prompt.append("Current target: ").append(HttpText.shortSummary(snapshot.requestText(), snapshot.service())).append("\n");
         if (state.settings().deltaOnly()) {
             prompt.append("Request delta from last prompt:\n````diff\n")
-                    .append(headTail(DiffUtil.lineDiff(state.lastPromptRequest(), currentRequest, Integer.MAX_VALUE), 1000, 1000))
+                    .append(headTail(DiffUtil.lineDiff(state.lastPromptRequest(), snapshot.requestText(), Integer.MAX_VALUE), 1000, 1000))
                     .append("\n````\n");
         }
-        prompt.append("Current request:\n````http\n").append(requestContext(currentRequest)).append("\n````\n");
+        prompt.append("Current request:\n````http\n").append(requestContext(snapshot.requestText())).append("\n````\n");
         if (!snapshot.responseText().isBlank()) {
             prompt.append("Current response:\n````http\n").append(responseContext(snapshot.responseText())).append("\n````\n");
         }
