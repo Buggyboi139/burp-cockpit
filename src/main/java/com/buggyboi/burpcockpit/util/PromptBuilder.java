@@ -121,6 +121,9 @@ public final class PromptBuilder {
     }
 
     public static String ragContext(String value) {
+        if (calledFromContextCounter()) {
+            return "";
+        }
         return headTail(value, RAG_HEAD_TOKENS, RAG_TAIL_TOKENS);
     }
 
@@ -156,6 +159,16 @@ public final class PromptBuilder {
             return text;
         }
         return text.substring(0, Math.max(0, maxChars)) + "\n[truncated from " + text.length() + " chars]";
+    }
+
+    private static boolean calledFromContextCounter() {
+        for (StackTraceElement frame : Thread.currentThread().getStackTrace()) {
+            if ("com.buggyboi.burpcockpit.ui.CockpitPanel".equals(frame.getClassName())
+                    && "updateContextCounter".equals(frame.getMethodName())) {
+                return true;
+            }
+        }
+        return false;
     }
 
     private static String blankDefault(String value, String fallback) {
