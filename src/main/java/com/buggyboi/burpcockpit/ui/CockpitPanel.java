@@ -59,7 +59,7 @@ public final class CockpitPanel extends JPanel {
 
     private final JTextArea requestArea = TextContextMenu.area(24, 90, true);
     private final JTextArea responseArea = TextContextMenu.area(12, 90, false);
-    private final JTextArea transcriptArea = TextContextMenu.area(24, 70, false);
+    private final TextContextMenu.ChatTranscriptPane transcriptArea = TextContextMenu.transcript(24, 70);
     private final JTextArea promptArea = TextContextMenu.area(4, 70, true);
     private final JTextArea notesArea = TextContextMenu.area(24, 70, true);
 
@@ -78,7 +78,7 @@ public final class CockpitPanel extends JPanel {
     private final JLabel statusLabel = new JLabel("Analysis ready.");
     private final JLabel chatStatusLabel = new JLabel("Chat ready.");
     private final JLabel historyLabel = new JLabel("0/0");
-    private final JLabel contextLabel = new JLabel("Mode: Chat | Req 0.0k | Resp 0.0k | Notes off | RAG off | Total 0.0k");
+    private final JLabel contextLabel = new JLabel("Mode: Chat | Traffic 0.0k | Notes off | RAG off | Total 0.0k");
 
     private JSplitPane mainSplitPane;
     private JTabbedPane rightTabs;
@@ -91,7 +91,6 @@ public final class CockpitPanel extends JPanel {
     private int busyTick;
     private boolean suppressNoteEvents;
     private String activeNoteName = "";
-    private int activeAssistantStart = -1;
 
     public CockpitPanel(MontoyaApi api, CockpitState state, LumaraClient lumaraClient) {
         super(new BorderLayout());
@@ -142,8 +141,6 @@ public final class CockpitPanel extends JPanel {
     private void configureControls() {
         promptArea.setLineWrap(true);
         promptArea.setWrapStyleWord(true);
-        transcriptArea.setLineWrap(true);
-        transcriptArea.setWrapStyleWord(true);
         notesArea.setLineWrap(true);
         notesArea.setWrapStyleWord(true);
 
@@ -254,8 +251,11 @@ public final class CockpitPanel extends JPanel {
         panel.setBorder(BorderFactory.createEmptyBorder(4, 4, 4, 4));
         promptArea.setText("What are the highest-value bug bounty tests for this request/response?");
 
+        JPanel topStatus = new JPanel(new FlowLayout(FlowLayout.LEFT, 4, 0));
+        topStatus.add(contextLabel);
+        panel.add(topStatus, BorderLayout.NORTH);
+
         JPanel center = new JPanel(new BorderLayout(4, 4));
-        center.add(contextLabel, BorderLayout.NORTH);
         center.add(wrap("Chat", transcriptArea), BorderLayout.CENTER);
         center.add(chatStatusLabel, BorderLayout.SOUTH);
         panel.add(center, BorderLayout.CENTER);
@@ -322,9 +322,9 @@ public final class CockpitPanel extends JPanel {
         return panel;
     }
 
-    private JScrollPane wrap(String title, JTextArea area) {
-        area.setFont(new Font(Font.MONOSPACED, Font.PLAIN, 12));
-        JScrollPane scroll = new JScrollPane(area);
+    private JScrollPane wrap(String title, Component component) {
+        if (component instanceof JTextArea area) area.setFont(new Font(Font.MONOSPACED, Font.PLAIN, 12));
+        JScrollPane scroll = new JScrollPane(component);
         scroll.setBorder(BorderFactory.createTitledBorder(title));
         return scroll;
     }
@@ -430,17 +430,18 @@ public final class CockpitPanel extends JPanel {
             setChatStatus("AI is already working. Stop it first.");
             return;
         }
+        String userInstruction = promptArea.getText();
         lastMode = analysis ? "Analyze" : "Chat";
         lastRagDump = "";
         updateContextCounter();
-        activeAssistantStart = appendChatTurn(promptArea.getText(), analysis);
+        appendChatTurn(userInstruction, analysis);
         startBusyIndicator();
         setStatus(ragCheck.isSelected() ? "Preparing RAG context..." : "Streaming response...");
         setChatStatus(ragCheck.isSelected() ? "Preparing RAG context..." : "Streaming response...");
 
-        String userInstruction = promptArea.getText();
         Thread worker = new Thread(() -> {
             AtomicBoolean contentStarted = new AtomicBoolean(false);
+            StringBuilder assistantBuffer = new StringBuilder();
             try {
                 String ragDump = "";
                 if (ragCheck.isSelected()) {
@@ -471,8 +472,8 @@ public final class CockpitPanel extends JPanel {
                         stopBusyIndicator();
                         setChatStatus("Streaming response...");
                     }
-                    transcriptArea.append(contentToken);
-                    transcriptArea.setCaretPosition(transcriptArea.getDocument().getLength());
+                    assistantBuffer.append(contentToken);
+                    transcriptArea.replaceActiveAssistantText(assistantBuffer.toString());
                 }));
 
                 TextContextMenu.later(() -> {
@@ -507,29 +508,16 @@ public final class CockpitPanel extends JPanel {
         worker.start();
     }
 
-    private int appendChatTurn(String userPrompt, boolean analysis) {
-        String existing = transcriptArea.getText();
-        if (!existing.isBlank() && !existing.endsWith("\n")) transcriptArea.append("\n");
-        if (!existing.isBlank()) transcriptArea.append("\n────────────────────────\n");
-        transcriptArea.append((analysis ? "User Analyze" : "User") + " " + Instant.now() + "\n");
-        transcriptArea.append(Objects.toString(userPrompt, "").trim());
-        transcriptArea.append("\n\nAssistant\n");
-        int start = transcriptArea.getDocument().getLength();
-        transcriptArea.setCaretPosition(start);
-        return start;
+    private void appendChatTurn(String userPrompt, boolean analysis) {
+        transcriptArea.startTurn(analysis ? "User Analyze" : "User", Objects.toString(userPrompt, ""), analysis);
     }
 
     private void replaceActiveAssistantText(String replacement) {
-        int start = Math.max(0, activeAssistantStart);
-        int end = transcriptArea.getDocument().getLength();
-        if (start > end) start = end;
-        transcriptArea.replaceRange(Objects.toString(replacement, ""), start, end);
-        transcriptArea.setCaretPosition(transcriptArea.getDocument().getLength());
+        transcriptArea.replaceActiveAssistantText(Objects.toString(replacement, ""));
     }
 
     private void clearChatTranscript() {
-        transcriptArea.setText("");
-        activeAssistantStart = -1;
+        transcriptArea.clearTranscript();
         setChatStatus("Chat cleared.");
     }
 
@@ -766,12 +754,15 @@ public final class CockpitPanel extends JPanel {
     }
 
     private void updateContextCounter() {
-        int req = PromptBuilder.estimatedTokens(PromptBuilder.requestContext(requestArea.getText()));
-        int resp = PromptBuilder.estimatedTokens(PromptBuilder.responseContext(responseArea.getText()));
+        HttpService service = state.currentService();
+        if (service == null) service = HttpText.inferService(requestArea.getText(), true).orElse(null);
+        TrafficSnapshot snapshot = new TrafficSnapshot(service, requestArea.getText(), responseArea.getText(), Instant.now(), "counter");
+        boolean analyze = "Analyze".equals(lastMode);
+        int traffic = PromptBuilder.estimatedTokens(analyze ? PromptBuilder.buildAnalyzeContext(snapshot) : PromptBuilder.buildChatContext(snapshot));
         int notes = notesCheck.isSelected() ? PromptBuilder.estimatedTokens(PromptBuilder.notesContext(activeNoteContent())) : 0;
         int rag = ragCheck.isSelected() ? PromptBuilder.estimatedTokens(lastRagDump) : 0;
-        int total = req + resp + notes + rag;
-        contextLabel.setText("Mode: " + lastMode + " | Req " + fmt(req) + " | Resp " + fmt(resp) + " | Notes " + (notesCheck.isSelected() ? fmt(notes) : "off") + " | RAG " + (ragCheck.isSelected() ? fmt(rag) : "off") + " | Total " + fmt(total));
+        int total = traffic + notes + rag;
+        contextLabel.setText("Mode: " + lastMode + " | Traffic " + fmt(traffic) + " | Notes " + (notesCheck.isSelected() ? fmt(notes) : "off") + " | RAG " + (ragCheck.isSelected() ? fmt(rag) : "off") + " | Total " + fmt(total));
     }
 
     private static String fmt(int tokens) { return String.format("%.1fk", tokens / 1000.0D); }
