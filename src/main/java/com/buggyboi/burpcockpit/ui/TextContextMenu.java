@@ -226,15 +226,20 @@ public final class TextContextMenu {
             if (body.isBlank()) {
                 return "";
             }
-            if (looksRaw(body) || body.length() < 180) {
+            if (looksRaw(body)) {
+                return leading + body;
+            }
+            if (body.length() < 90 && !body.contains("; ") && !body.contains(". ")) {
                 return leading + body;
             }
 
-            body = body.replaceAll("\\s+(?=(What matters|Best next|Exact fields|Expected response|Low-value|Notes?|Findings?|Signal|Signals|Next steps?|Recommendation|Summary|Risk|Target|Request|Response|Parameters?):)", "\n\n");
+            body = body.replaceAll("\\s+(?=(What matters|Highest-value|Highest Value|Best next|Exact fields|Expected response|Low-value|Skip|Notes?|Findings?|Signal|Signals|Next steps?|Recommendation|Summary|Risk|Target|Request|Response|Parameters?|Primary|Secondary|Test|Tests|Why|Impact|Evidence):)", "\n\n");
+            body = body.replaceAll("\\s+(?=(Target path|Primary concern|Secondary concern|High-value|Likely signal|Main signal|Test this|Do not waste|What to send|What to watch))", "\n");
             body = body.replaceAll("\\s+(?=\\d+[.)]\\s+)", "\n");
             body = body.replaceAll("\\s+(?=-\\s+)", "\n");
             body = body.replaceAll("(?<=[.!?])\\s+(?=[A-Z0-9])", "\n");
             body = body.replaceAll(";\\s+(?=[A-Z0-9])", ";\n");
+            body = body.replaceAll(",\\s+(?=(cookies?|headers?|parameters?|body|status|response|request|tokens?|IDs?|auth|origin|referer|method|path)\\b)", ",\n");
 
             StringBuilder shaped = new StringBuilder(body.length() + 64);
             String[] chunks = body.split("\\n", -1);
@@ -252,7 +257,7 @@ public final class TextContextMenu {
                 } else if (clean.matches("^\\d+[.)]\\s+.*")) {
                     shaped.append(clean).append('\n');
                 } else {
-                    shaped.append(wrapChunk(clean, 110)).append('\n');
+                    shaped.append(wrapChunk(clean, 96)).append('\n');
                 }
             }
             return leading + shaped.toString().stripTrailing();
@@ -281,16 +286,31 @@ public final class TextContextMenu {
 
         private static boolean looksRaw(String body) {
             String text = body.trim();
-            return text.startsWith("GET ")
+            if (text.startsWith("GET ")
                     || text.startsWith("POST ")
                     || text.startsWith("PUT ")
                     || text.startsWith("PATCH ")
                     || text.startsWith("DELETE ")
                     || text.startsWith("HTTP/")
                     || text.contains("\r\n")
-                    || text.matches("^[A-Za-z0-9_-]+: .*")
                     || text.startsWith("{")
-                    || text.startsWith("[");
+                    || text.startsWith("[")) {
+                return true;
+            }
+            if (text.matches("^[A-Za-z0-9_-]+: .*") && !text.contains(". ") && !text.contains("; ")) {
+                String key = text.substring(0, text.indexOf(':')).toLowerCase();
+                return key.equals("host")
+                        || key.equals("cookie")
+                        || key.equals("content-type")
+                        || key.equals("content-length")
+                        || key.equals("origin")
+                        || key.equals("referer")
+                        || key.equals("accept")
+                        || key.equals("authorization")
+                        || key.startsWith("x-")
+                        || key.startsWith("sec-");
+            }
+            return false;
         }
 
         private static boolean isSectionLabel(String value) {
