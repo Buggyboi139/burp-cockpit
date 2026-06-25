@@ -103,6 +103,7 @@ public final class HttpText {
         if (methodPath.isBlank()) {
             return host;
         }
-        return methodPath + " @ " + host;
+        String truncated = methodPath.length() > 96 ? methodPath.substring(0, 96) + "..." : methodPath;
+        return truncated + " @ " + host;
     }
 }
