@@ -1,0 +1,37 @@
+plugins {
+    id 'java'
+}
+
+group = 'com.buggyboi'
+version = '0.1.0'
+
+java {
+    toolchain {
+        languageVersion = JavaLanguageVersion.of(21)
+    }
+}
+
+repositories {
+    mavenCentral()
+}
+
+dependencies {
+    compileOnly 'net.portswigger.burp.extensions:montoya-api:2026.4'
+    testCompileOnly 'net.portswigger.burp.extensions:montoya-api:2026.4'
+}
+
+compileJava {
+    options.encoding = 'UTF-8'
+    options.release = 21
+}
+
+jar {
+    archiveBaseName = 'burp-cockpit'
+    manifest {
+        attributes(
+            'Implementation-Title': 'Burp Cockpit',
+            'Implementation-Version': project.version,
+            'Built-By': 'Buggyboi139'
+        )
+    }
+}
