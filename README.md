@@ -9,6 +9,7 @@ Burp Cockpit is a Burp Suite Community/Professional Montoya extension that ports
 - Opens selected request/response pairs in Cockpit.
 - Lets you edit and resend HTTP requests through Burp's own HTTP stack.
 - Keeps bounded request iteration history with back/forward controls.
+- Adds `Clear Cache` to collapse history back to the current visible request/response, clear RAG/delta context, and keep the active local note.
 - Provides the current Cockpit layout: request editor, response viewer, right-side `Analysis` and `Notes` tabs.
 - Streams final AI responses live into the chat transcript area.
 - Uses the `Thinking` checkbox only as a reasoning-behavior toggle.
@@ -18,9 +19,10 @@ Burp Cockpit is a Burp Suite Community/Professional Montoya extension that ports
 - Supports automatic scoped RAG injection when the `RAG` toggle is enabled.
 - Keeps notes local to Kali under `~/.burp-cockpit/notes/`.
 - Auto-loads or creates the current host note when a request is opened.
-- Always includes the active local note in AI context.
+- Always includes the active local note in AI context with a flat first-10k-token cap.
 - Appends Analyze output into the active local note.
 - Keeps the target label out of the toolbar so long paths stay in the request editor where they belong.
+- Keeps the token selector fixed-width so it does not eat the toolbar like a deranged UI parasite.
 - Includes export helpers for curl and Python.
 - Includes right-click copy/cut/paste/select-all menus on Cockpit text controls.
 
@@ -29,7 +31,7 @@ Burp Cockpit is a Burp Suite Community/Professional Montoya extension that ports
 Toolbar:
 
 ```text
-[New] [←] [→] [Send] [Export curl] [Export Python] [Hide Right Pane] [Settings]
+[New] [←] [→] [Send] [Clear Cache] [Export curl] [Export Python] [Hide Right Pane] [Settings]
 Tokens [1k|2k|20k|96k] [Thinking] [Delta only] [RAG]
 ```
 
@@ -38,7 +40,7 @@ Analysis tab:
 ```text
 Prompt box
 [Send Chat] [Analyze] [Stop]
-Context counter
+Context counter based on capped prompt context
 Single chat transcript with flashing Working... indicator while waiting
 Streaming final response transcript
 ```
@@ -47,9 +49,36 @@ Notes tab:
 
 ```text
 Editable note dropdown
-[Load] [Save] [Refresh]
+[Load] [New Note]
+Editable note name field
+[Save] [Refresh]
 Local Markdown note editor
 ```
+
+## Context caps
+
+The editor panes keep the full visible request/response, but the AI context and counter use capped prompt material:
+
+```text
+Request:  first ~4k tokens + last ~4k tokens
+Response: first ~4k tokens + last ~4k tokens
+Notes:    first ~10k tokens
+RAG:      first ~4k tokens + last ~4k tokens
+```
+
+This keeps the model from being force-fed some surprise mega-body just because a web app coughed up a weird response. Humanity invented limits because apparently it had to.
+
+## What `Clear Cache` does
+
+`Clear Cache` does not delete notes or clear the visible request/response. It:
+
+- saves the current local note
+- keeps the current visible request and response
+- keeps the active note selected
+- clears the last RAG dump
+- resets the delta baseline
+- collapses request history to one current exchange
+- recalculates context from current request, response, and note only
 
 ## What it intentionally does not include
 
@@ -160,7 +189,7 @@ calendar.google.com.md
 script.google.com.md
 ```
 
-The note dropdown is editable. Typing a new note name and pressing `Save` creates or updates that local Markdown note.
+The note dropdown and name field are editable. Typing a new note name and pressing `Save` creates or updates that local Markdown note. `New Note` gives you a clean note-creation path without pretending combo boxes are a user interface triumph.
 
 ## Common failure: Burp HTML error from AI call
 
