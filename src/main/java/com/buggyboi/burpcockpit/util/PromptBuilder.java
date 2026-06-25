@@ -6,6 +6,11 @@ import com.buggyboi.burpcockpit.state.TrafficSnapshot;
 import java.util.Objects;
 
 public final class PromptBuilder {
+    public static final int REQUEST_CONTEXT_LIMIT = 24000;
+    public static final int RESPONSE_CONTEXT_LIMIT = 12000;
+    public static final int NOTES_CONTEXT_LIMIT = 12000;
+    public static final int RAG_CONTEXT_LIMIT = 18000;
+
     private PromptBuilder() {}
 
     public static String systemPrompt(boolean thinkingEnabled) {
@@ -84,19 +89,35 @@ public final class PromptBuilder {
         prompt.append("Current target: ").append(HttpText.shortSummary(currentRequest, snapshot.service())).append("\n");
         if (state.settings().deltaOnly()) {
             prompt.append("Request delta from last prompt:\n````diff\n")
-                    .append(DiffUtil.lineDiff(state.lastPromptRequest(), currentRequest, Integer.MAX_VALUE))
+                    .append(limit(DiffUtil.lineDiff(state.lastPromptRequest(), currentRequest, Integer.MAX_VALUE), 8000))
                     .append("\n````\n");
         }
-        prompt.append("Current request:\n````http\n").append(currentRequest).append("\n````\n");
+        prompt.append("Current request:\n````http\n").append(requestContext(currentRequest)).append("\n````\n");
         if (!snapshot.responseText().isBlank()) {
-            prompt.append("Current response:\n````http\n").append(snapshot.responseText()).append("\n````\n");
+            prompt.append("Current response:\n````http\n").append(responseContext(snapshot.responseText())).append("\n````\n");
         }
         if (pinnedNote != null && !pinnedNote.isBlank()) {
-            prompt.append("Pinned notes:\n````markdown\n").append(pinnedNote).append("\n````\n");
+            prompt.append("Pinned notes:\n````markdown\n").append(notesContext(pinnedNote)).append("\n````\n");
         }
         if (ragDump != null && !ragDump.isBlank()) {
-            prompt.append("Auto-injected RAG context:\n````text\n").append(limit(ragDump, 18000)).append("\n````\n");
+            prompt.append("Auto-injected RAG context:\n````text\n").append(ragContext(ragDump)).append("\n````\n");
         }
+    }
+
+    public static String requestContext(String value) {
+        return limit(value, REQUEST_CONTEXT_LIMIT);
+    }
+
+    public static String responseContext(String value) {
+        return limit(value, RESPONSE_CONTEXT_LIMIT);
+    }
+
+    public static String notesContext(String value) {
+        return limit(value, NOTES_CONTEXT_LIMIT);
+    }
+
+    public static String ragContext(String value) {
+        return limit(value, RAG_CONTEXT_LIMIT);
     }
 
     public static int estimatedTokens(String value) {
@@ -108,7 +129,7 @@ public final class PromptBuilder {
         if (text.length() <= maxChars) {
             return text;
         }
-        return text.substring(0, Math.max(0, maxChars)) + "\n[truncated]";
+        return text.substring(0, Math.max(0, maxChars)) + "\n[truncated from " + text.length() + " chars]";
     }
 
     private static String blankDefault(String value, String fallback) {
