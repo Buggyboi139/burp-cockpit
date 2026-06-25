@@ -27,6 +27,7 @@ import javax.swing.JTabbedPane;
 import javax.swing.JTextArea;
 import javax.swing.JTextField;
 import javax.swing.JToolBar;
+import javax.swing.Timer;
 import java.awt.BorderLayout;
 import java.awt.Component;
 import java.awt.Dimension;
@@ -38,8 +39,6 @@ import java.awt.Insets;
 import java.awt.Toolkit;
 import java.awt.datatransfer.StringSelection;
 import java.time.Instant;
-import java.util.ArrayDeque;
-import java.util.Deque;
 import java.util.List;
 import java.util.Objects;
 import java.util.Optional;
@@ -56,8 +55,7 @@ public final class CockpitPanel extends JPanel {
 
     private final JTextArea requestArea = TextContextMenu.area(24, 90, true);
     private final JTextArea responseArea = TextContextMenu.area(12, 90, false);
-    private final JTextArea transcriptArea = TextContextMenu.area(22, 70, false);
-    private final JTextArea thinkingArea = TextContextMenu.area(2, 70, false);
+    private final JTextArea transcriptArea = TextContextMenu.area(24, 70, false);
     private final JTextArea promptArea = TextContextMenu.area(4, 70, true);
     private final JTextArea notesArea = TextContextMenu.area(24, 70, true);
 
@@ -82,7 +80,8 @@ public final class CockpitPanel extends JPanel {
     private boolean rightPaneVisible = true;
     private Thread currentAiThread;
     private String lastRagDump = "";
-    private final StringBuilder thinkingBuffer = new StringBuilder();
+    private Timer busyTimer;
+    private int busyTick;
 
     public CockpitPanel(MontoyaApi api, CockpitState state, LumaraClient lumaraClient) {
         super(new BorderLayout());
@@ -138,10 +137,9 @@ public final class CockpitPanel extends JPanel {
         promptArea.setWrapStyleWord(true);
         transcriptArea.setLineWrap(true);
         transcriptArea.setWrapStyleWord(true);
-        thinkingArea.setLineWrap(true);
-        thinkingArea.setWrapStyleWord(true);
         notesArea.setLineWrap(true);
         notesArea.setWrapStyleWord(true);
+        currentLabel.setMaximumSize(new Dimension(520, 28));
     }
 
     private void buildUi() {
@@ -243,8 +241,7 @@ public final class CockpitPanel extends JPanel {
 
         JPanel center = new JPanel(new BorderLayout(4, 4));
         center.add(contextLabel, BorderLayout.NORTH);
-        center.add(wrap("Thinking preview", thinkingArea), BorderLayout.CENTER);
-        center.add(wrap("Analysis", transcriptArea), BorderLayout.SOUTH);
+        center.add(wrap("Chat", transcriptArea), BorderLayout.CENTER);
         panel.add(center, BorderLayout.CENTER);
         return panel;
     }
@@ -308,7 +305,9 @@ public final class CockpitPanel extends JPanel {
         requestArea.setCaretPosition(0);
         responseArea.setText(snapshot.responseText());
         responseArea.setCaretPosition(0);
-        currentLabel.setText(HttpText.shortSummary(snapshot.requestText(), snapshot.service()));
+        String summary = HttpText.shortSummary(snapshot.requestText(), snapshot.service());
+        currentLabel.setText(summary);
+        currentLabel.setToolTipText(HttpText.methodAndPath(snapshot.requestText()));
         historyLabel.setText(state.historyLabel());
         setStatus("Loaded " + snapshot.source() + " at " + snapshot.capturedAt());
         updateContextCounter();
@@ -321,7 +320,9 @@ public final class CockpitPanel extends JPanel {
         }
         TrafficSnapshot snapshot = new TrafficSnapshot(service, requestArea.getText(), responseArea.getText(), Instant.now(), source);
         state.pushSnapshot(snapshot);
-        currentLabel.setText(HttpText.shortSummary(snapshot.requestText(), snapshot.service()));
+        String summary = HttpText.shortSummary(snapshot.requestText(), snapshot.service());
+        currentLabel.setText(summary);
+        currentLabel.setToolTipText(HttpText.methodAndPath(snapshot.requestText()));
         historyLabel.setText(state.historyLabel());
         updateContextCounter();
     }
@@ -380,10 +381,9 @@ public final class CockpitPanel extends JPanel {
             return;
         }
         transcriptArea.setText("");
-        thinkingArea.setText("");
-        thinkingBuffer.setLength(0);
         lastRagDump = "";
         updateContextCounter();
+        startBusyIndicator();
         setStatus(settings.injectRag() ? "Preparing RAG context..." : "Streaming response...");
 
         Thread worker = new Thread(() -> {
@@ -415,17 +415,20 @@ public final class CockpitPanel extends JPanel {
                         settings,
                         system,
                         prompt,
-                        thinkingToken -> TextContextMenu.later(() -> appendThinking(thinkingToken, contentStarted.get())),
                         contentToken -> TextContextMenu.later(() -> {
                             if (contentStarted.compareAndSet(false, true)) {
-                                thinkingBuffer.setLength(0);
-                                thinkingArea.setText("");
+                                stopBusyIndicator();
+                                transcriptArea.setText("");
                             }
                             transcriptArea.append(contentToken);
                             transcriptArea.setCaretPosition(transcriptArea.getDocument().getLength());
                         }));
 
                 TextContextMenu.later(() -> {
+                    stopBusyIndicator();
+                    if (!contentStarted.get() && transcriptArea.getText().startsWith("Thinking")) {
+                        transcriptArea.setText("No streamed content was returned by the model.");
+                    }
                     state.lastPromptRequest(requestArea.getText());
                     if (analysis) {
                         appendAnalysisToNotes(transcriptArea.getText());
@@ -434,9 +437,15 @@ public final class CockpitPanel extends JPanel {
                 });
             } catch (InterruptedException interrupted) {
                 Thread.currentThread().interrupt();
-                TextContextMenu.later(() -> setStatus("AI request cancelled."));
+                TextContextMenu.later(() -> {
+                    stopBusyIndicator();
+                    setStatus("AI request cancelled.");
+                });
             } catch (Throwable throwable) {
-                TextContextMenu.later(() -> showError("Lumara call failed", throwable));
+                TextContextMenu.later(() -> {
+                    stopBusyIndicator();
+                    showError("Lumara call failed", throwable);
+                });
             } finally {
                 currentAiThread = null;
             }
@@ -446,28 +455,26 @@ public final class CockpitPanel extends JPanel {
         worker.start();
     }
 
-    private void appendThinking(String token, boolean contentStarted) {
-        if (contentStarted || !settings.includeThinking()) {
-            return;
+    private void startBusyIndicator() {
+        stopBusyIndicator();
+        busyTick = 0;
+        transcriptArea.setText("Thinking...");
+        busyTimer = new Timer(450, e -> {
+            String[] states = {"Thinking", "Thinking.", "Thinking..", "Thinking..."};
+            transcriptArea.setText(states[busyTick++ % states.length]);
+        });
+        busyTimer.start();
+    }
+
+    private void stopBusyIndicator() {
+        if (busyTimer != null) {
+            busyTimer.stop();
+            busyTimer = null;
         }
-        thinkingBuffer.append(token);
-        String[] lines = thinkingBuffer.toString().replace("\r\n", "\n").replace('\r', '\n').split("\n", -1);
-        Deque<String> lastLines = new ArrayDeque<>();
-        for (String line : lines) {
-            if (line.isBlank() && lastLines.isEmpty()) {
-                continue;
-            }
-            lastLines.addLast(line);
-            while (lastLines.size() > 2) {
-                lastLines.removeFirst();
-            }
-        }
-        thinkingArea.setText(String.join("\n", lastLines));
-        thinkingArea.setCaretPosition(thinkingArea.getDocument().getLength());
     }
 
     private void appendAnalysisToNotes(String output) {
-        if (output == null || output.isBlank()) {
+        if (output == null || output.isBlank() || output.startsWith("Thinking")) {
             return;
         }
         String append = "\n\n## Analysis " + Instant.now() + "\n\n" + output.trim() + "\n";
@@ -487,6 +494,7 @@ public final class CockpitPanel extends JPanel {
     private void stopCurrentAiWorker() {
         if (currentAiThread != null && currentAiThread.isAlive()) {
             currentAiThread.interrupt();
+            stopBusyIndicator();
             setStatus("AI request cancelled.");
         }
     }
