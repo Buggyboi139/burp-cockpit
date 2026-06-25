@@ -10,13 +10,16 @@ Burp Cockpit is a Burp Suite Community/Professional Montoya extension that ports
 - Lets you edit and resend HTTP requests through Burp's own HTTP stack.
 - Keeps bounded request iteration history with back/forward controls.
 - Provides the current Cockpit layout: request editor, response viewer, right-side `Analysis` and `Notes` tabs.
-- Streams final AI responses live into the transcript area.
-- When `Thinking` is enabled, streams temporary reasoning into a two-line preview, then clears it when the final response begins.
+- Streams final AI responses live into the chat transcript area.
+- Uses the `Thinking` checkbox only as a reasoning-behavior toggle.
+- Shows a temporary flashing `Thinking...` indicator in the chat box while waiting for final content.
+- Does not display, store, append, or re-inject reasoning text.
 - Supports automatic scoped RAG injection when the `RAG` toggle is enabled.
 - Keeps notes local to Kali under `~/.burp-cockpit/notes/`.
 - Auto-loads or creates the current host note when a request is opened.
 - Always includes the active local note in AI context.
 - Appends Analyze output into the active local note.
+- Truncates the toolbar target label so long paths stay in the request editor where they belong.
 - Includes export helpers for curl and Python.
 - Includes right-click copy/cut/paste/select-all menus on Cockpit text controls.
 
@@ -35,7 +38,7 @@ Analysis tab:
 Prompt box
 [Send Chat] [Analyze] [Stop]
 Context counter
-Temporary 2-line thinking preview
+Single chat transcript with flashing Thinking... indicator while waiting
 Streaming final response transcript
 ```
 
@@ -55,6 +58,8 @@ The older standalone controls are gone:
 - No toolbar-level `Analyze` button.
 - No `Stream` checkbox. Streaming is always on.
 - No `Notes` checkbox. Notes always happen.
+- No dedicated `Thinking preview` box.
+- No displayed reasoning text.
 - No `Host Note` button.
 - No `Pin` button.
 - No `Ingest Notes` button.
@@ -119,13 +124,7 @@ Expected streaming final content shape:
 {"choices":[{"delta":{"content":"text"}}]}
 ```
 
-Expected optional thinking shape:
-
-```json
-{"choices":[{"delta":{"reasoning_content":"thinking"}}]}
-```
-
-The thinking preview is display-only. It is not appended to notes, retained in transcript history, or injected into future context.
+Reasoning output, if your backend emits it, is intentionally ignored by the UI. The `Thinking` checkbox only changes the reasoning instruction sent to the model.
 
 ## RAG endpoint payload
 
