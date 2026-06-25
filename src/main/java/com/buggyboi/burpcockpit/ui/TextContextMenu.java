@@ -70,8 +70,13 @@ public final class TextContextMenu {
             area = new JTextArea(rows, cols);
         }
         area.setEditable(editable);
-        area.setLineWrap(false);
-        area.setWrapStyleWord(false);
+        if (isChatTranscript(rows, cols, editable)) {
+            area.setLineWrap(true);
+            area.setWrapStyleWord(true);
+        } else {
+            area.setLineWrap(false);
+            area.setWrapStyleWord(false);
+        }
         install(area);
         return area;
     }
@@ -104,6 +109,8 @@ public final class TextContextMenu {
 
         private ChatTranscriptArea(int rows, int cols) {
             super(rows, cols);
+            setLineWrap(true);
+            setWrapStyleWord(true);
         }
 
         @Override
@@ -171,7 +178,7 @@ public final class TextContextMenu {
             if (text.isBlank()) {
                 return text;
             }
-            StringBuilder out = new StringBuilder(text.length());
+            StringBuilder out = new StringBuilder(text.length() + 128);
             boolean inFence = false;
             String[] lines = text.split("\n", -1);
             for (String originalLine : lines) {
@@ -184,6 +191,7 @@ public final class TextContextMenu {
                 }
                 if (!inFence) {
                     line = cleanMarkdownLine(line);
+                    line = shapePlainLine(line);
                     if (isPlainHeading(line)) {
                         appendBlankLineIfNeeded(out);
                     }
@@ -210,6 +218,84 @@ public final class TextContextMenu {
             body = body.replaceAll("(?<!_)_([^_\\n]+)_(?!_)", "$1");
             body = body.replaceAll("`([^`\\n]+)`", "$1");
             return leading + body;
+        }
+
+        private static String shapePlainLine(String line) {
+            String leading = leadingWhitespace(line);
+            String body = line.substring(leading.length()).trim();
+            if (body.isBlank()) {
+                return "";
+            }
+            if (looksRaw(body) || body.length() < 180) {
+                return leading + body;
+            }
+
+            body = body.replaceAll("\\s+(?=(What matters|Best next|Exact fields|Expected response|Low-value|Notes?|Findings?|Signal|Signals|Next steps?|Recommendation|Summary|Risk|Target|Request|Response|Parameters?):)", "\n\n");
+            body = body.replaceAll("\\s+(?=\\d+[.)]\\s+)", "\n");
+            body = body.replaceAll("\\s+(?=-\\s+)", "\n");
+            body = body.replaceAll("(?<=[.!?])\\s+(?=[A-Z0-9])", "\n");
+            body = body.replaceAll(";\\s+(?=[A-Z0-9])", ";\n");
+
+            StringBuilder shaped = new StringBuilder(body.length() + 64);
+            String[] chunks = body.split("\\n", -1);
+            for (String chunk : chunks) {
+                String clean = chunk.trim();
+                if (clean.isEmpty()) {
+                    appendBlankLineIfNeeded(shaped);
+                    continue;
+                }
+                if (isSectionLabel(clean)) {
+                    appendBlankLineIfNeeded(shaped);
+                    shaped.append(clean).append('\n');
+                } else if (clean.startsWith("- ")) {
+                    shaped.append("  ").append(clean).append('\n');
+                } else if (clean.matches("^\\d+[.)]\\s+.*")) {
+                    shaped.append(clean).append('\n');
+                } else {
+                    shaped.append(wrapChunk(clean, 110)).append('\n');
+                }
+            }
+            return leading + shaped.toString().stripTrailing();
+        }
+
+        private static String wrapChunk(String value, int width) {
+            String text = Objects.toString(value, "").trim();
+            if (text.length() <= width) {
+                return text;
+            }
+            StringBuilder out = new StringBuilder(text.length() + 32);
+            int lineLen = 0;
+            for (String word : text.split("\\s+")) {
+                if (lineLen > 0 && lineLen + 1 + word.length() > width) {
+                    out.append('\n');
+                    lineLen = 0;
+                } else if (lineLen > 0) {
+                    out.append(' ');
+                    lineLen++;
+                }
+                out.append(word);
+                lineLen += word.length();
+            }
+            return out.toString();
+        }
+
+        private static boolean looksRaw(String body) {
+            String text = body.trim();
+            return text.startsWith("GET ")
+                    || text.startsWith("POST ")
+                    || text.startsWith("PUT ")
+                    || text.startsWith("PATCH ")
+                    || text.startsWith("DELETE ")
+                    || text.startsWith("HTTP/")
+                    || text.contains("\r\n")
+                    || text.matches("^[A-Za-z0-9_-]+: .*")
+                    || text.startsWith("{")
+                    || text.startsWith("[");
+        }
+
+        private static boolean isSectionLabel(String value) {
+            String trimmed = value.trim();
+            return trimmed.endsWith(":") && trimmed.length() <= 80;
         }
 
         private static boolean isPlainHeading(String line) {
