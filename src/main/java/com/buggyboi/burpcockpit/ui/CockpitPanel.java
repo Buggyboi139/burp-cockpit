@@ -77,6 +77,7 @@ public final class CockpitPanel extends JPanel {
     private final JCheckBox deltaCheck;
     private final JCheckBox ragCheck;
     private final JLabel statusLabel = new JLabel("Analysis ready.");
+    private final JLabel chatStatusLabel = new JLabel("Chat ready.");
     private final JLabel historyLabel = new JLabel("0/0");
     private final JLabel contextLabel = new JLabel("Ctx req 0.0k | resp 0.0k | notes 0.0k | rag 0.0k | total 0.0k");
 
@@ -90,6 +91,7 @@ public final class CockpitPanel extends JPanel {
     private int busyTick;
     private boolean suppressNoteEvents;
     private String activeNoteName = "";
+    private int activeAssistantStart = -1;
 
     public CockpitPanel(MontoyaApi api, CockpitState state, LumaraClient lumaraClient) {
         super(new BorderLayout());
@@ -178,6 +180,7 @@ public final class CockpitPanel extends JPanel {
         noteNameField.setPreferredSize(NOTE_NAME_SIZE);
         noteNameField.setMaximumSize(NOTE_NAME_SIZE);
         contextLabel.setMaximumSize(new Dimension(540, 22));
+        chatStatusLabel.setBorder(BorderFactory.createEmptyBorder(2, 4, 0, 4));
     }
 
     private void buildUi() {
@@ -282,6 +285,7 @@ public final class CockpitPanel extends JPanel {
         JPanel center = new JPanel(new BorderLayout(4, 4));
         center.add(contextLabel, BorderLayout.NORTH);
         center.add(wrap("Chat", transcriptArea), BorderLayout.CENTER);
+        center.add(chatStatusLabel, BorderLayout.SOUTH);
         panel.add(center, BorderLayout.CENTER);
         return panel;
     }
@@ -379,6 +383,7 @@ public final class CockpitPanel extends JPanel {
         historyLabel.setText(state.historyLabel());
         updateContextCounter();
         setStatus("Cache cleared. Context reset to current request, response, and note.");
+        setChatStatus("Chat cache cleared.");
     }
 
     private void sendCurrentRequest() {
@@ -431,14 +436,15 @@ public final class CockpitPanel extends JPanel {
             return;
         }
         if (currentAiThread != null && currentAiThread.isAlive()) {
-            setStatus("AI is already working. Stop it first.");
+            setChatStatus("AI is already working. Stop it first.");
             return;
         }
-        transcriptArea.setText("");
         lastRagDump = "";
         updateContextCounter();
+        activeAssistantStart = appendChatTurn(promptArea.getText(), analysis);
         startBusyIndicator();
         setStatus(settings.injectRag() ? "Preparing RAG context..." : "Streaming response...");
+        setChatStatus(settings.injectRag() ? "Preparing RAG context..." : "Streaming response...");
 
         Thread worker = new Thread(() -> {
             AtomicBoolean contentStarted = new AtomicBoolean(false);
@@ -458,6 +464,7 @@ public final class CockpitPanel extends JPanel {
                     lastRagDump = finalRagDump;
                     updateContextCounter();
                     setStatus("Streaming response...");
+                    setChatStatus("Streaming response...");
                 });
 
                 String prompt = analysis
@@ -469,7 +476,7 @@ public final class CockpitPanel extends JPanel {
                 lumaraClient.streamChat(settings, system, prompt, contentToken -> TextContextMenu.later(() -> {
                     if (contentStarted.compareAndSet(false, true)) {
                         stopBusyIndicator();
-                        transcriptArea.setText("");
+                        setChatStatus("Streaming response...");
                     }
                     transcriptArea.append(contentToken);
                     transcriptArea.setCaretPosition(transcriptArea.getDocument().getLength());
@@ -478,26 +485,29 @@ public final class CockpitPanel extends JPanel {
                 TextContextMenu.later(() -> {
                     stopBusyIndicator();
                     int appended = 0;
-                    if (!contentStarted.get() && transcriptArea.getText().startsWith("Working")) {
-                        transcriptArea.setText("No streamed content was returned by the model.");
+                    if (!contentStarted.get()) {
+                        replaceActiveAssistantText("No streamed content was returned by the model.");
                     } else {
-                        NoteExtractResult result = extractAndAppendNoteBlocks(transcriptArea.getText());
+                        NoteExtractResult result = extractAndAppendNoteBlocks(activeAssistantText());
                         appended = result.appendedCount();
-                        transcriptArea.setText(result.visibleText().trim());
-                        transcriptArea.setCaretPosition(0);
+                        replaceActiveAssistantText(result.visibleText().trim());
                     }
                     state.lastPromptRequest(requestArea.getText());
-                    setStatus(appended > 0 ? "AI response ready. Appended " + appended + " note block(s)." : "AI response ready.");
+                    String done = appended > 0 ? "AI response ready. Appended " + appended + " note block(s)." : "AI response ready.";
+                    setStatus(done);
+                    setChatStatus(done);
                 });
             } catch (InterruptedException interrupted) {
                 Thread.currentThread().interrupt();
                 TextContextMenu.later(() -> {
                     stopBusyIndicator();
+                    setChatStatus("AI request cancelled.");
                     setStatus("AI request cancelled.");
                 });
             } catch (Throwable throwable) {
                 TextContextMenu.later(() -> {
                     stopBusyIndicator();
+                    setChatStatus("Lumara call failed.");
                     showError("Lumara call failed", throwable);
                 });
             } finally {
@@ -507,6 +517,41 @@ public final class CockpitPanel extends JPanel {
         currentAiThread = worker;
         worker.setDaemon(true);
         worker.start();
+    }
+
+    private int appendChatTurn(String userPrompt, boolean analysis) {
+        String existing = transcriptArea.getText();
+        if (!existing.isBlank() && !existing.endsWith("\n")) {
+            transcriptArea.append("\n");
+        }
+        if (!existing.isBlank()) {
+            transcriptArea.append("\n────────────────────────\n");
+        }
+        transcriptArea.append((analysis ? "User Analyze" : "User") + " " + Instant.now() + "\n");
+        transcriptArea.append(Objects.toString(userPrompt, "").trim());
+        transcriptArea.append("\n\nAssistant\n");
+        int start = transcriptArea.getDocument().getLength();
+        transcriptArea.setCaretPosition(start);
+        return start;
+    }
+
+    private String activeAssistantText() {
+        int start = Math.max(0, activeAssistantStart);
+        String text = transcriptArea.getText();
+        if (start >= text.length()) {
+            return "";
+        }
+        return text.substring(start);
+    }
+
+    private void replaceActiveAssistantText(String replacement) {
+        int start = Math.max(0, activeAssistantStart);
+        int end = transcriptArea.getDocument().getLength();
+        if (start > end) {
+            start = end;
+        }
+        transcriptArea.replaceRange(Objects.toString(replacement, ""), start, end);
+        transcriptArea.setCaretPosition(transcriptArea.getDocument().getLength());
     }
 
     private String withNoteInstructions(String prompt) {
@@ -577,10 +622,9 @@ public final class CockpitPanel extends JPanel {
     private void startBusyIndicator() {
         stopBusyIndicator();
         busyTick = 0;
-        transcriptArea.setText("Working...");
         busyTimer = new Timer(450, e -> {
             String[] states = {"Working", "Working.", "Working..", "Working..."};
-            transcriptArea.setText(states[busyTick++ % states.length]);
+            setChatStatus(states[busyTick++ % states.length]);
         });
         busyTimer.start();
     }
@@ -590,6 +634,10 @@ public final class CockpitPanel extends JPanel {
             busyTimer.stop();
             busyTimer = null;
         }
+    }
+
+    private void setChatStatus(String status) {
+        chatStatusLabel.setText(Objects.toString(status, ""));
     }
 
     private void appendAnalysisToNotes(String output) {
@@ -614,6 +662,7 @@ public final class CockpitPanel extends JPanel {
         if (currentAiThread != null && currentAiThread.isAlive()) {
             currentAiThread.interrupt();
             stopBusyIndicator();
+            setChatStatus("AI request cancelled.");
             setStatus("AI request cancelled.");
         }
     }
