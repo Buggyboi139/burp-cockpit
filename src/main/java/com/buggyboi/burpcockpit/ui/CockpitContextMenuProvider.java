@@ -29,27 +29,20 @@ public final class CockpitContextMenuProvider implements ContextMenuItemsProvide
 
         JMenu menu = new JMenu("Burp Cockpit");
 
-        JMenuItem send = new JMenuItem("Send to Cockpit");
-        send.addActionListener(e -> panel.loadFromBurp(pairs.getFirst(), "context menu"));
+        JMenuItem send = new JMenuItem("Open in Cockpit");
+        send.addActionListener(e -> panel.loadFromBurp(pairs.get(0), "context menu"));
         menu.add(send);
 
-        JMenuItem analyze = new JMenuItem("Send and Analyze");
+        JMenuItem analyze = new JMenuItem("Open and Analyze");
         analyze.addActionListener(e -> {
-            panel.loadFromBurp(pairs.getFirst(), "context menu analyze");
+            panel.loadFromBurp(pairs.get(0), "context menu analyze");
             panel.runAnalysis("Analyze the selected Burp message and propose the highest-value manual tests.");
         });
         menu.add(analyze);
 
-        JMenuItem payloads = new JMenuItem("Payload Ideas");
-        payloads.addActionListener(e -> {
-            panel.loadFromBurp(pairs.getFirst(), "context menu payloads");
-            panel.runPayloadIdeas();
-        });
-        menu.add(payloads);
-
         JMenuItem note = new JMenuItem("Create / Load Host Note");
         note.addActionListener(e -> {
-            panel.loadFromBurp(pairs.getFirst(), "context menu note");
+            panel.loadFromBurp(pairs.get(0), "context menu note");
             panel.ensureCurrentHostNote();
         });
         menu.add(note);
