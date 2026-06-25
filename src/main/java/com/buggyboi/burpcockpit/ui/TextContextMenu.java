@@ -5,7 +5,6 @@ import javax.swing.JButton;
 import javax.swing.JEditorPane;
 import javax.swing.JLabel;
 import javax.swing.JMenuItem;
-import javax.swing.JPanel;
 import javax.swing.JPopupMenu;
 import javax.swing.JTextArea;
 import javax.swing.JTextField;
@@ -13,7 +12,6 @@ import javax.swing.JToolBar;
 import javax.swing.KeyStroke;
 import javax.swing.SwingUtilities;
 import javax.swing.text.JTextComponent;
-import java.awt.BorderLayout;
 import java.awt.Component;
 import java.awt.Container;
 import java.awt.Dimension;
@@ -69,17 +67,13 @@ public final class TextContextMenu {
         JTextArea area;
         if (isPromptInput(rows, cols, editable)) {
             area = new PromptArea(rows, cols);
-        } else if (isChatTranscript(rows, cols, editable)) {
-            area = new ChatTranscriptArea(rows, cols);
         } else if (isRequestEditor(rows, cols, editable)) {
             area = new RequestEditorArea(rows, cols);
         } else {
             area = new JTextArea(rows, cols);
         }
         area.setEditable(editable);
-        boolean visualWrap = isChatTranscript(rows, cols, editable)
-                || isRequestEditor(rows, cols, editable)
-                || isResponseViewer(rows, cols, editable);
+        boolean visualWrap = isRequestEditor(rows, cols, editable) || isResponseViewer(rows, cols, editable);
         area.setLineWrap(visualWrap);
         area.setWrapStyleWord(visualWrap);
         install(area);
@@ -107,10 +101,6 @@ public final class TextContextMenu {
         return editable && rows == 4 && cols == 70;
     }
 
-    private static boolean isChatTranscript(int rows, int cols, boolean editable) {
-        return !editable && rows == 24 && cols == 70;
-    }
-
     private static boolean isRequestEditor(int rows, int cols, boolean editable) {
         return editable && rows == 24 && cols == 90;
     }
@@ -133,30 +123,31 @@ public final class TextContextMenu {
         }
 
         public void startTurn(String userRole, String userPrompt, boolean analysis) {
+            Instant now = Instant.now();
             activeAssistantIndex = -1;
-            cards.add(new ChatCard(userRole, Objects.toString(userPrompt, "").trim(), analysis));
-            cards.add(new ChatCard(analysis ? "Analyze" : "Assistant", "", analysis));
+            cards.add(new ChatCard(userRole, Objects.toString(userPrompt, "").trim(), analysis, now));
+            cards.add(new ChatCard(analysis ? "Analyze" : "Assistant", "", analysis, now));
             activeAssistantIndex = cards.size() - 1;
             render();
         }
 
         public void appendAssistantText(String text) {
             if (activeAssistantIndex < 0 || activeAssistantIndex >= cards.size()) {
-                cards.add(new ChatCard("Assistant", "", false));
+                cards.add(new ChatCard("Assistant", "", false, Instant.now()));
                 activeAssistantIndex = cards.size() - 1;
             }
             ChatCard card = cards.get(activeAssistantIndex);
-            cards.set(activeAssistantIndex, new ChatCard(card.role(), card.content() + Objects.toString(text, ""), card.analysis()));
+            cards.set(activeAssistantIndex, new ChatCard(card.role(), card.content() + Objects.toString(text, ""), card.analysis(), card.timestamp()));
             render();
         }
 
         public void replaceActiveAssistantText(String text) {
             if (activeAssistantIndex < 0 || activeAssistantIndex >= cards.size()) {
-                cards.add(new ChatCard("Assistant", Objects.toString(text, ""), false));
+                cards.add(new ChatCard("Assistant", Objects.toString(text, ""), false, Instant.now()));
                 activeAssistantIndex = cards.size() - 1;
             } else {
                 ChatCard card = cards.get(activeAssistantIndex);
-                cards.set(activeAssistantIndex, new ChatCard(card.role(), Objects.toString(text, ""), card.analysis()));
+                cards.set(activeAssistantIndex, new ChatCard(card.role(), Objects.toString(text, ""), card.analysis(), card.timestamp()));
             }
             render();
         }
@@ -199,7 +190,7 @@ public final class TextContextMenu {
             for (ChatCard card : cards) {
                 String kind = card.analysis() ? "card analyze" : "Assistant".equals(card.role()) ? "card assistant" : "card";
                 html.append("<div class='").append(kind).append("'>");
-                html.append("<div class='role'>").append(escape(card.role())).append(" • ").append(escape(Instant.now().toString())).append("</div>");
+                html.append("<div class='role'>").append(escape(card.role())).append(" | ").append(escape(card.timestamp().toString())).append("</div>");
                 html.append(markdownToHtml(card.content()));
                 html.append("</div>");
             }
@@ -260,7 +251,7 @@ public final class TextContextMenu {
         }
     }
 
-    private record ChatCard(String role, String content, boolean analysis) {}
+    private record ChatCard(String role, String content, boolean analysis, Instant timestamp) {}
 
     private static final class RequestEditorArea extends JTextArea {
         private static final String REFRESH_COOKIES_BUTTON_NAME = "burp-cockpit-refresh-cookies";
@@ -349,7 +340,7 @@ public final class TextContextMenu {
                 return out;
             }
             if (result.getClass().isArray()) {
-                for (int i = 0; i < Array.getLength(result); i++) out.add(result);
+                for (int i = 0; i < Array.getLength(result); i++) out.add(Array.get(result, i));
                 return out;
             }
             throw new IllegalStateException("Montoya cookie jar returned unsupported type: " + result.getClass().getName());
@@ -465,138 +456,6 @@ public final class TextContextMenu {
                 } catch (Throwable ignored) { }
             }
             return false;
-        }
-    }
-
-    private static final class ChatTranscriptArea extends JTextArea {
-        private ChatTranscriptArea(int rows, int cols) {
-            super(rows, cols);
-            setLineWrap(true);
-            setWrapStyleWord(true);
-        }
-
-        @Override public void replaceRange(String str, int start, int end) {
-            super.replaceRange(cleanAssistantText(str), start, end);
-        }
-
-        private static String cleanAssistantText(String value) {
-            String text = Objects.toString(value, "").replace("\r\n", "\n").replace('\r', '\n');
-            if (text.isBlank()) return text;
-            StringBuilder out = new StringBuilder(text.length() + 128);
-            boolean inFence = false;
-            for (String original : text.split("\n", -1)) {
-                String line = original;
-                String trimmed = line.trim();
-                if (trimmed.startsWith("```") || trimmed.startsWith("~~~")) {
-                    inFence = !inFence;
-                    out.append(line).append('\n');
-                    continue;
-                }
-                if (!inFence) {
-                    line = shapePlainLine(cleanMarkdownLine(line));
-                    if (isPlainHeading(line)) appendBlankLineIfNeeded(out);
-                }
-                out.append(line);
-                if (!line.endsWith("\n")) out.append('\n');
-            }
-            String cleaned = out.toString()
-                    .replaceAll("\\n{4,}", "\n\n\n")
-                    .replaceAll("(?m)^\\s*[-*]\\s*$\\n", "")
-                    .stripTrailing();
-            return cleaned.isEmpty() ? "" : cleaned;
-        }
-
-        private static String cleanMarkdownLine(String line) {
-            String leading = leadingWhitespace(line);
-            String body = line.substring(leading.length());
-            body = body.replaceFirst("^#{1,6}\\s+", "");
-            body = body.replaceFirst("^[-*+]\\s+", "- ");
-            body = body.replaceAll("\\*\\*\\*(.+?)\\*\\*\\*", "$1");
-            body = body.replaceAll("___(.+?)___", "$1");
-            body = body.replaceAll("\\*\\*(.+?)\\*\\*", "$1");
-            body = body.replaceAll("__(.+?)__", "$1");
-            body = body.replaceAll("(?<!\\*)\\*([^*\\n]+)\\*(?!\\*)", "$1");
-            body = body.replaceAll("(?<!_)_([^_\\n]+)_(?!_)", "$1");
-            body = body.replaceAll("`([^`\\n]+)`", "$1");
-            return leading + body;
-        }
-
-        private static String shapePlainLine(String line) {
-            String leading = leadingWhitespace(line);
-            String body = line.substring(leading.length()).trim();
-            if (body.isBlank()) return "";
-            if (looksRaw(body)) return leading + body;
-            if (body.length() < 90 && !body.contains("; ") && !body.contains(". ")) return leading + body;
-            body = body.replaceAll("\\s+(?=(What matters|Highest-value|Highest Value|Best next|Exact fields|Expected response|Low-value|Skip|Notes?|Findings?|Signal|Signals|Next steps?|Recommendation|Summary|Risk|Target|Request|Response|Parameters?|Primary|Secondary|Test|Tests|Why|Impact|Evidence):)", "\n\n");
-            body = body.replaceAll("\\s+(?=(Target path|Primary concern|Secondary concern|High-value|Likely signal|Main signal|Test this|Do not waste|What to send|What to watch))", "\n");
-            body = body.replaceAll("\\s+(?=\\d+[.)]\\s+)", "\n");
-            body = body.replaceAll("\\s+(?=-\\s+)", "\n");
-            body = body.replaceAll("(?<=[.!?])\\s+(?=[A-Z0-9])", "\n");
-            body = body.replaceAll(";\\s+(?=[A-Z0-9])", ";\n");
-            body = body.replaceAll(",\\s+(?=(cookies?|headers?|parameters?|body|status|response|request|tokens?|IDs?|auth|origin|referer|method|path)\\b)", ",\n");
-            StringBuilder shaped = new StringBuilder(body.length() + 64);
-            for (String chunk : body.split("\\n", -1)) {
-                String clean = chunk.trim();
-                if (clean.isEmpty()) appendBlankLineIfNeeded(shaped);
-                else if (isSectionLabel(clean)) {
-                    appendBlankLineIfNeeded(shaped);
-                    shaped.append(clean).append("\n\n");
-                } else if (clean.startsWith("- ")) shaped.append("  ").append(clean).append('\n');
-                else if (clean.matches("^\\d+[.)]\\s+.*")) shaped.append(clean).append("\n\n");
-                else shaped.append(wrapChunk(clean, 96)).append("\n\n");
-            }
-            return leading + shaped.toString().stripTrailing();
-        }
-
-        private static String wrapChunk(String value, int width) {
-            String text = Objects.toString(value, "").trim();
-            if (text.length() <= width) return text;
-            StringBuilder out = new StringBuilder(text.length() + 32);
-            int lineLen = 0;
-            for (String word : text.split("\\s+")) {
-                if (lineLen > 0 && lineLen + 1 + word.length() > width) {
-                    out.append('\n');
-                    lineLen = 0;
-                } else if (lineLen > 0) {
-                    out.append(' ');
-                    lineLen++;
-                }
-                out.append(word);
-                lineLen += word.length();
-            }
-            return out.toString();
-        }
-
-        private static boolean looksRaw(String body) {
-            String text = body.trim();
-            if (text.startsWith("GET ") || text.startsWith("POST ") || text.startsWith("PUT ") || text.startsWith("PATCH ")
-                    || text.startsWith("DELETE ") || text.startsWith("HTTP/") || text.contains("\r\n") || text.startsWith("{") || text.startsWith("[")) return true;
-            if (text.matches("^[A-Za-z0-9_-]+: .*") && !text.contains(". ") && !text.contains("; ")) {
-                String key = text.substring(0, text.indexOf(':')).toLowerCase(Locale.ROOT);
-                return key.equals("host") || key.equals("cookie") || key.equals("content-type") || key.equals("content-length")
-                        || key.equals("origin") || key.equals("referer") || key.equals("accept") || key.equals("authorization")
-                        || key.startsWith("x-") || key.startsWith("sec-");
-            }
-            return false;
-        }
-
-        private static boolean isSectionLabel(String value) {
-            String trimmed = value.trim();
-            return trimmed.endsWith(":") && trimmed.length() <= 80;
-        }
-
-        private static boolean isPlainHeading(String line) {
-            String trimmed = line.trim();
-            if (trimmed.isEmpty() || trimmed.startsWith("-") || trimmed.matches("^\\d+[.)].*")) return false;
-            return trimmed.endsWith(":") || trimmed.length() <= 64 && !trimmed.contains(".") && !trimmed.contains(";");
-        }
-
-        private static void appendBlankLineIfNeeded(StringBuilder out) {
-            int len = out.length();
-            if (len == 0) return;
-            if (len >= 2 && out.charAt(len - 1) == '\n' && out.charAt(len - 2) == '\n') return;
-            if (out.charAt(len - 1) != '\n') out.append('\n');
-            out.append('\n');
         }
     }
 
@@ -752,11 +611,5 @@ public final class TextContextMenu {
             }
         }
         return null;
-    }
-
-    private static String leadingWhitespace(String value) {
-        int i = 0;
-        while (i < value.length() && Character.isWhitespace(value.charAt(i))) i++;
-        return value.substring(0, i);
     }
 }
