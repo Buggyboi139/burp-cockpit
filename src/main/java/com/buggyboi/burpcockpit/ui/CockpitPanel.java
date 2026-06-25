@@ -50,8 +50,6 @@ public final class CockpitPanel extends JPanel {
     private static final Dimension TOKEN_SELECTOR_SIZE = new Dimension(58, 24);
     private static final Dimension NOTE_SELECTOR_SIZE = new Dimension(230, 24);
     private static final Dimension NOTE_NAME_SIZE = new Dimension(230, 24);
-    private static final String NOTE_OPEN = "[[COCKPIT_NOTE]]";
-    private static final String NOTE_CLOSE = "[[/COCKPIT_NOTE]]";
 
     private final MontoyaApi api;
     private final CockpitState state;
@@ -76,10 +74,11 @@ public final class CockpitPanel extends JPanel {
     private final JCheckBox thinkingCheck;
     private final JCheckBox deltaCheck;
     private final JCheckBox ragCheck;
+    private final JCheckBox notesCheck = new JCheckBox("Notes", false);
     private final JLabel statusLabel = new JLabel("Analysis ready.");
     private final JLabel chatStatusLabel = new JLabel("Chat ready.");
     private final JLabel historyLabel = new JLabel("0/0");
-    private final JLabel contextLabel = new JLabel("Ctx req 0.0k | resp 0.0k | notes 0.0k | rag 0.0k | total 0.0k");
+    private final JLabel contextLabel = new JLabel("Mode: Chat | Req 0.0k | Resp 0.0k | Notes off | RAG off | Total 0.0k");
 
     private JSplitPane mainSplitPane;
     private JTabbedPane rightTabs;
@@ -87,6 +86,7 @@ public final class CockpitPanel extends JPanel {
     private boolean rightPaneVisible = true;
     private Thread currentAiThread;
     private String lastRagDump = "";
+    private String lastMode = "Chat";
     private Timer busyTimer;
     private int busyTick;
     private boolean suppressNoteEvents;
@@ -106,7 +106,8 @@ public final class CockpitPanel extends JPanel {
         this.notesDirField = TextContextMenu.field(settings.notesDirectory().toString());
         this.thinkingCheck = new JCheckBox("Thinking", settings.includeThinking());
         this.deltaCheck = new JCheckBox("Delta only", settings.deltaOnly());
-        this.ragCheck = new JCheckBox("RAG", settings.injectRag());
+        this.ragCheck = new JCheckBox("RAG", false);
+        settings.injectRag(false);
         configureControls();
         buildUi();
         applySettingsToControls();
@@ -115,16 +116,12 @@ public final class CockpitPanel extends JPanel {
     }
 
     public void loadFromBurp(HttpRequestResponse pair, String source) {
-        if (pair == null) {
-            return;
-        }
+        if (pair == null) return;
         TextContextMenu.later(() -> loadSnapshot(TrafficSnapshot.from(pair, source)));
     }
 
     public void considerAutoCapture(HttpRequest request, HttpResponse response, String source) {
-        if (!settings.autoCaptureLatest()) {
-            return;
-        }
+        if (!settings.autoCaptureLatest()) return;
         String requestText = request == null ? "" : request.toString();
         String responseText = response == null ? "" : response.toString();
         HttpService service = request == null ? null : request.httpService();
@@ -160,27 +157,21 @@ public final class CockpitPanel extends JPanel {
         noteSelector.setMaximumSize(NOTE_SELECTOR_SIZE);
         noteSelector.setPrototypeDisplayValue("script.google.com...........");
         Component editor = noteSelector.getEditor().getEditorComponent();
-        if (editor instanceof JTextField textField) {
-            TextContextMenu.install(textField);
-        }
+        if (editor instanceof JTextField textField) TextContextMenu.install(textField);
         noteSelector.addActionListener(e -> {
-            if (suppressNoteEvents) {
-                return;
-            }
+            if (suppressNoteEvents) return;
             Object item = noteSelector.getEditor().getItem();
-            if (item == null) {
-                item = noteSelector.getSelectedItem();
-            }
+            if (item == null) item = noteSelector.getSelectedItem();
             String name = NotesStore.sanitizeName(Objects.toString(item, ""));
-            if (!name.isBlank()) {
-                noteNameField.setText(name);
-            }
+            if (!name.isBlank()) noteNameField.setText(name);
         });
 
         noteNameField.setPreferredSize(NOTE_NAME_SIZE);
         noteNameField.setMaximumSize(NOTE_NAME_SIZE);
-        contextLabel.setMaximumSize(new Dimension(540, 22));
+        contextLabel.setMaximumSize(new Dimension(660, 22));
         chatStatusLabel.setBorder(BorderFactory.createEmptyBorder(2, 4, 0, 4));
+        notesCheck.setToolTipText("Include the active local note as read-only AI context.");
+        notesCheck.addActionListener(e -> updateContextCounter());
     }
 
     private void buildUi() {
@@ -261,12 +252,23 @@ public final class CockpitPanel extends JPanel {
     private Component buildAnalysisPanel() {
         JPanel panel = new JPanel(new BorderLayout(4, 4));
         panel.setBorder(BorderFactory.createEmptyBorder(4, 4, 4, 4));
-
-        JPanel top = new JPanel(new BorderLayout(4, 4));
         promptArea.setText("What are the highest-value bug bounty tests for this request/response?");
-        top.add(wrap("Prompt", promptArea), BorderLayout.CENTER);
 
-        JPanel buttons = new JPanel(new FlowLayout(FlowLayout.LEFT));
+        JPanel center = new JPanel(new BorderLayout(4, 4));
+        center.add(contextLabel, BorderLayout.NORTH);
+        center.add(wrap("Chat", transcriptArea), BorderLayout.CENTER);
+        center.add(chatStatusLabel, BorderLayout.SOUTH);
+        panel.add(center, BorderLayout.CENTER);
+
+        JPanel south = new JPanel(new BorderLayout(4, 4));
+        JScrollPane promptScroll = new JScrollPane(promptArea);
+        promptScroll.setBorder(BorderFactory.createEmptyBorder());
+        south.add(promptScroll, BorderLayout.CENTER);
+
+        JPanel buttons = new JPanel(new FlowLayout(FlowLayout.RIGHT));
+        buttons.add(notesCheck);
+        buttons.add(ragCheck);
+
         JButton chat = new JButton("Send Chat");
         chat.addActionListener(e -> runChatFromUi());
         buttons.add(chat);
@@ -279,14 +281,12 @@ public final class CockpitPanel extends JPanel {
         stop.addActionListener(e -> stopCurrentAiWorker());
         buttons.add(stop);
 
-        top.add(buttons, BorderLayout.SOUTH);
-        panel.add(top, BorderLayout.NORTH);
+        JButton clearChat = new JButton("Clear Chat");
+        clearChat.addActionListener(e -> clearChatTranscript());
+        buttons.add(clearChat);
 
-        JPanel center = new JPanel(new BorderLayout(4, 4));
-        center.add(contextLabel, BorderLayout.NORTH);
-        center.add(wrap("Chat", transcriptArea), BorderLayout.CENTER);
-        center.add(chatStatusLabel, BorderLayout.SOUTH);
-        panel.add(center, BorderLayout.CENTER);
+        south.add(buttons, BorderLayout.SOUTH);
+        panel.add(south, BorderLayout.SOUTH);
         return panel;
     }
 
@@ -361,9 +361,7 @@ public final class CockpitPanel extends JPanel {
 
     private void syncSnapshotFromEditors(String source) {
         HttpService service = state.currentService();
-        if (service == null) {
-            service = HttpText.inferService(requestArea.getText(), true).orElse(null);
-        }
+        if (service == null) service = HttpText.inferService(requestArea.getText(), true).orElse(null);
         TrafficSnapshot snapshot = new TrafficSnapshot(service, requestArea.getText(), responseArea.getText(), Instant.now(), source);
         state.pushSnapshot(snapshot);
         historyLabel.setText(state.historyLabel());
@@ -375,14 +373,12 @@ public final class CockpitPanel extends JPanel {
         stopBusyIndicator();
         lastRagDump = "";
         HttpService service = state.currentService();
-        if (service == null) {
-            service = HttpText.inferService(requestArea.getText(), true).orElse(null);
-        }
+        if (service == null) service = HttpText.inferService(requestArea.getText(), true).orElse(null);
         TrafficSnapshot snapshot = new TrafficSnapshot(service, requestArea.getText(), responseArea.getText(), Instant.now(), "cache reset");
         state.resetToCurrentSnapshot(snapshot);
         historyLabel.setText(state.historyLabel());
         updateContextCounter();
-        setStatus("Cache cleared. Context reset to current request, response, and note.");
+        setStatus("Cache cleared. Context reset to current request and response. Notes and RAG are opt-in for chat.");
         setChatStatus("Chat cache cleared.");
     }
 
@@ -419,13 +415,8 @@ public final class CockpitPanel extends JPanel {
         thread.start();
     }
 
-    private void runChatFromUi() {
-        runAi(false);
-    }
-
-    private void runAnalysisFromUi() {
-        runAi(true);
-    }
+    private void runChatFromUi() { runAi(false); }
+    private void runAnalysisFromUi() { runAi(true); }
 
     private void runAi(boolean analysis) {
         syncSettingsFromControls();
@@ -439,21 +430,23 @@ public final class CockpitPanel extends JPanel {
             setChatStatus("AI is already working. Stop it first.");
             return;
         }
+        lastMode = analysis ? "Analyze" : "Chat";
         lastRagDump = "";
         updateContextCounter();
         activeAssistantStart = appendChatTurn(promptArea.getText(), analysis);
         startBusyIndicator();
-        setStatus(settings.injectRag() ? "Preparing RAG context..." : "Streaming response...");
-        setChatStatus(settings.injectRag() ? "Preparing RAG context..." : "Streaming response...");
+        setStatus(ragCheck.isSelected() ? "Preparing RAG context..." : "Streaming response...");
+        setChatStatus(ragCheck.isSelected() ? "Preparing RAG context..." : "Streaming response...");
 
+        String userInstruction = promptArea.getText();
         Thread worker = new Thread(() -> {
             AtomicBoolean contentStarted = new AtomicBoolean(false);
             try {
                 String ragDump = "";
-                if (settings.injectRag()) {
+                if (ragCheck.isSelected()) {
                     try {
-                        String query = PromptBuilder.ragQuery(state, promptArea.getText());
-                        ragDump = lumaraClient.ragSearch(settings, query, 8, "both");
+                        String query = PromptBuilder.ragQuery(state, userInstruction);
+                        ragDump = lumaraClient.ragSearch(settings, query, 5, "both");
                     } catch (Throwable throwable) {
                         ragDump = "RAG injection failed: " + Objects.toString(throwable.getMessage(), throwable.getClass().getSimpleName());
                     }
@@ -467,11 +460,11 @@ public final class CockpitPanel extends JPanel {
                     setChatStatus("Streaming response...");
                 });
 
+                String noteContext = notesCheck.isSelected() ? activeNoteContent() : "";
                 String prompt = analysis
-                        ? PromptBuilder.analysisPrompt(state, promptArea.getText(), activeNoteContent(), ragDump)
-                        : PromptBuilder.chatPrompt(state, promptArea.getText(), activeNoteContent(), ragDump);
-                prompt = withNoteInstructions(prompt);
-                String system = PromptBuilder.systemPrompt(settings.includeThinking());
+                        ? PromptBuilder.analysisPrompt(state, userInstruction, noteContext, ragDump)
+                        : PromptBuilder.chatPrompt(state, userInstruction, noteContext, ragDump);
+                String system = PromptBuilder.systemPrompt(settings.includeThinking(), analysis);
 
                 lumaraClient.streamChat(settings, system, prompt, contentToken -> TextContextMenu.later(() -> {
                     if (contentStarted.compareAndSet(false, true)) {
@@ -484,18 +477,13 @@ public final class CockpitPanel extends JPanel {
 
                 TextContextMenu.later(() -> {
                     stopBusyIndicator();
-                    int appended = 0;
                     if (!contentStarted.get()) {
                         replaceActiveAssistantText("No streamed content was returned by the model.");
-                    } else {
-                        NoteExtractResult result = extractAndAppendNoteBlocks(activeAssistantText());
-                        appended = result.appendedCount();
-                        replaceActiveAssistantText(result.visibleText().trim());
                     }
                     state.lastPromptRequest(requestArea.getText());
-                    String done = appended > 0 ? "AI response ready. Appended " + appended + " note block(s)." : "AI response ready.";
-                    setStatus(done);
-                    setChatStatus(done);
+                    setStatus("AI response ready.");
+                    setChatStatus("AI response ready.");
+                    updateContextCounter();
                 });
             } catch (InterruptedException interrupted) {
                 Thread.currentThread().interrupt();
@@ -521,12 +509,8 @@ public final class CockpitPanel extends JPanel {
 
     private int appendChatTurn(String userPrompt, boolean analysis) {
         String existing = transcriptArea.getText();
-        if (!existing.isBlank() && !existing.endsWith("\n")) {
-            transcriptArea.append("\n");
-        }
-        if (!existing.isBlank()) {
-            transcriptArea.append("\n────────────────────────\n");
-        }
+        if (!existing.isBlank() && !existing.endsWith("\n")) transcriptArea.append("\n");
+        if (!existing.isBlank()) transcriptArea.append("\n────────────────────────\n");
         transcriptArea.append((analysis ? "User Analyze" : "User") + " " + Instant.now() + "\n");
         transcriptArea.append(Objects.toString(userPrompt, "").trim());
         transcriptArea.append("\n\nAssistant\n");
@@ -535,89 +519,19 @@ public final class CockpitPanel extends JPanel {
         return start;
     }
 
-    private String activeAssistantText() {
-        int start = Math.max(0, activeAssistantStart);
-        String text = transcriptArea.getText();
-        if (start >= text.length()) {
-            return "";
-        }
-        return text.substring(start);
-    }
-
     private void replaceActiveAssistantText(String replacement) {
         int start = Math.max(0, activeAssistantStart);
         int end = transcriptArea.getDocument().getLength();
-        if (start > end) {
-            start = end;
-        }
+        if (start > end) start = end;
         transcriptArea.replaceRange(Objects.toString(replacement, ""), start, end);
         transcriptArea.setCaretPosition(transcriptArea.getDocument().getLength());
     }
 
-    private String withNoteInstructions(String prompt) {
-        return "Local note append channel:\n"
-                + "To append durable Markdown to the active note, include a block exactly like this:\n"
-                + NOTE_OPEN + "\n"
-                + "Markdown to append. Keep it concise. Do not include full chat history.\n"
-                + NOTE_CLOSE + "\n"
-                + "This block is hidden from chat after the response and appended to the current local note.\n\n"
-                + prompt;
+    private void clearChatTranscript() {
+        transcriptArea.setText("");
+        activeAssistantStart = -1;
+        setChatStatus("Chat cleared.");
     }
-
-    private NoteExtractResult extractAndAppendNoteBlocks(String output) {
-        String text = Objects.toString(output, "");
-        String lower = text.toLowerCase();
-        String openLower = NOTE_OPEN.toLowerCase();
-        String closeLower = NOTE_CLOSE.toLowerCase();
-        StringBuilder visible = new StringBuilder();
-        int appended = 0;
-        int cursor = 0;
-        while (cursor < text.length()) {
-            int open = lower.indexOf(openLower, cursor);
-            if (open < 0) {
-                visible.append(text.substring(cursor));
-                break;
-            }
-            visible.append(text, cursor, open);
-            int contentStart = open + NOTE_OPEN.length();
-            int close = lower.indexOf(closeLower, contentStart);
-            if (close < 0) {
-                visible.append(text.substring(open));
-                break;
-            }
-            String note = text.substring(contentStart, close).trim();
-            if (!note.isBlank()) {
-                appendModelNote(note);
-                appended++;
-            }
-            cursor = close + NOTE_CLOSE.length();
-        }
-        return new NoteExtractResult(visible.toString(), appended);
-    }
-
-    private void appendModelNote(String note) {
-        String clean = Objects.toString(note, "").trim();
-        if (clean.isBlank()) {
-            return;
-        }
-        if (activeNoteName.isBlank()) {
-            String fallback = noteSaveSourceName();
-            if (fallback.isBlank()) {
-                fallback = currentNoteName();
-            }
-            if (fallback.isBlank()) {
-                fallback = "DEFAULT";
-            }
-            activeNoteName = notesStore.ensureNote(fallback);
-            selectNote(activeNoteName);
-        }
-        String append = "\n\n## Model note " + Instant.now() + "\n\n" + clean + "\n";
-        notesArea.append(append);
-        quietSaveActiveNote();
-        updateContextCounter();
-    }
-
-    private record NoteExtractResult(String visibleText, int appendedCount) {}
 
     private void startBusyIndicator() {
         stopBusyIndicator();
@@ -636,24 +550,11 @@ public final class CockpitPanel extends JPanel {
         }
     }
 
-    private void setChatStatus(String status) {
-        chatStatusLabel.setText(Objects.toString(status, ""));
-    }
-
-    private void appendAnalysisToNotes(String output) {
-        if (output == null || output.isBlank() || output.startsWith("Working")) {
-            return;
-        }
-        String append = "\n\n## Analysis " + Instant.now() + "\n\n" + output.trim() + "\n";
-        notesArea.append(append);
-        quietSaveActiveNote();
-    }
+    private void setChatStatus(String status) { chatStatusLabel.setText(Objects.toString(status, "")); }
 
     private String activeNoteContent() {
         String text = notesArea.getText();
-        if (!text.isBlank()) {
-            return text;
-        }
+        if (!text.isBlank()) return text;
         String name = activeNoteName.isBlank() ? noteSaveSourceName() : activeNoteName;
         return name.isBlank() ? "" : notesStore.read(name);
     }
@@ -672,18 +573,11 @@ public final class CockpitPanel extends JPanel {
         suppressNoteEvents = true;
         noteSelector.removeAllItems();
         List<String> names = notesStore.listNoteNames();
-        if (names.isEmpty()) {
-            names = List.of(notesStore.ensureNote("DEFAULT"));
-        }
-        for (String name : names) {
-            noteSelector.addItem(name);
-        }
+        if (names.isEmpty()) names = List.of(notesStore.ensureNote("DEFAULT"));
+        for (String name : names) noteSelector.addItem(name);
         suppressNoteEvents = false;
-        if (!selected.isBlank()) {
-            selectNote(selected);
-        } else if (!names.isEmpty()) {
-            selectNote(names.get(0));
-        }
+        if (!selected.isBlank()) selectNote(selected);
+        else if (!names.isEmpty()) selectNote(names.get(0));
     }
 
     private void autoLoadHostNote(String hostLabel) {
@@ -708,9 +602,7 @@ public final class CockpitPanel extends JPanel {
                 break;
             }
         }
-        if (!found) {
-            noteSelector.addItem(clean);
-        }
+        if (!found) noteSelector.addItem(clean);
         noteSelector.setSelectedItem(clean);
         noteSelector.getEditor().setItem(clean);
         noteNameField.setText(clean);
@@ -721,9 +613,7 @@ public final class CockpitPanel extends JPanel {
         String defaultName = state.current().map(s -> notesStore.defaultNoteNameForHost(s.hostLabel())).orElse("DEFAULT");
         String entered = JOptionPane.showInputDialog(this, "New note name", defaultName);
         String name = NotesStore.sanitizeName(entered);
-        if (name.isBlank()) {
-            return;
-        }
+        if (name.isBlank()) return;
         quietSaveActiveNote();
         notesStore.ensureNote(name);
         refreshNoteList();
@@ -739,12 +629,8 @@ public final class CockpitPanel extends JPanel {
     private void loadSelectedNote() {
         quietSaveActiveNote();
         String name = selectedComboNoteName();
-        if (name.isBlank()) {
-            name = currentNoteName();
-        }
-        if (name.isBlank()) {
-            return;
-        }
+        if (name.isBlank()) name = currentNoteName();
+        if (name.isBlank()) return;
         notesStore.ensureNote(name);
         selectNote(name);
         activeNoteName = name;
@@ -758,9 +644,7 @@ public final class CockpitPanel extends JPanel {
     private void saveSelectedNote() {
         String targetName = currentNoteName();
         String sourceName = noteSaveSourceName();
-        if (targetName.isBlank()) {
-            targetName = sourceName.isBlank() ? "DEFAULT" : sourceName;
-        }
+        if (targetName.isBlank()) targetName = sourceName.isBlank() ? "DEFAULT" : sourceName;
         try {
             if (!sourceName.isBlank() && !sourceName.equals(targetName) && notesStore.exists(sourceName)) {
                 notesStore.write(sourceName, notesArea.getText());
@@ -782,12 +666,8 @@ public final class CockpitPanel extends JPanel {
 
     private void quietSaveActiveNote() {
         String name = noteSaveSourceName();
-        if (name.isBlank()) {
-            name = currentNoteName();
-        }
-        if (name.isBlank()) {
-            return;
-        }
+        if (name.isBlank()) name = currentNoteName();
+        if (name.isBlank()) return;
         try {
             notesStore.write(name, notesArea.getText());
             activeNoteName = name;
@@ -799,29 +679,19 @@ public final class CockpitPanel extends JPanel {
 
     private String noteSaveSourceName() {
         String active = NotesStore.sanitizeName(activeNoteName);
-        if (!active.isBlank() && notesStore.exists(active)) {
-            return active;
-        }
+        if (!active.isBlank() && notesStore.exists(active)) return active;
         String pinned = NotesStore.sanitizeName(state.pinnedNoteName());
-        if (!pinned.isBlank() && notesStore.exists(pinned)) {
-            return pinned;
-        }
+        if (!pinned.isBlank() && notesStore.exists(pinned)) return pinned;
         String selected = selectedListNoteName();
-        if (!selected.isBlank() && notesStore.exists(selected)) {
-            return selected;
-        }
+        if (!selected.isBlank() && notesStore.exists(selected)) return selected;
         String combo = selectedComboNoteName();
-        if (!combo.isBlank() && notesStore.exists(combo)) {
-            return combo;
-        }
+        if (!combo.isBlank() && notesStore.exists(combo)) return combo;
         return "";
     }
 
     private String currentNoteName() {
         String typedName = NotesStore.sanitizeName(noteNameField.getText());
-        if (!typedName.isBlank()) {
-            return typedName;
-        }
+        if (!typedName.isBlank()) return typedName;
         return selectedComboNoteName();
     }
 
@@ -832,9 +702,7 @@ public final class CockpitPanel extends JPanel {
 
     private String selectedComboNoteName() {
         Object selected = noteSelector.getEditor().getItem();
-        if (selected == null) {
-            selected = noteSelector.getSelectedItem();
-        }
+        if (selected == null) selected = noteSelector.getSelectedItem();
         return NotesStore.sanitizeName(Objects.toString(selected, ""));
     }
 
@@ -891,29 +759,22 @@ public final class CockpitPanel extends JPanel {
     }
 
     private void selectToken(int value) {
-        if (value <= 1100) {
-            tokenSelector.setSelectedItem("1k");
-        } else if (value <= 2200) {
-            tokenSelector.setSelectedItem("2k");
-        } else if (value >= 90000) {
-            tokenSelector.setSelectedItem("96k");
-        } else {
-            tokenSelector.setSelectedItem("20k");
-        }
+        if (value <= 1100) tokenSelector.setSelectedItem("1k");
+        else if (value <= 2200) tokenSelector.setSelectedItem("2k");
+        else if (value >= 90000) tokenSelector.setSelectedItem("96k");
+        else tokenSelector.setSelectedItem("20k");
     }
 
     private void updateContextCounter() {
         int req = PromptBuilder.estimatedTokens(PromptBuilder.requestContext(requestArea.getText()));
         int resp = PromptBuilder.estimatedTokens(PromptBuilder.responseContext(responseArea.getText()));
-        int notes = PromptBuilder.estimatedTokens(PromptBuilder.notesContext(activeNoteContent()));
-        int rag = PromptBuilder.estimatedTokens(PromptBuilder.ragContext(lastRagDump));
+        int notes = notesCheck.isSelected() ? PromptBuilder.estimatedTokens(PromptBuilder.notesContext(activeNoteContent())) : 0;
+        int rag = ragCheck.isSelected() ? PromptBuilder.estimatedTokens(lastRagDump) : 0;
         int total = req + resp + notes + rag;
-        contextLabel.setText("Ctx req " + fmt(req) + " | resp " + fmt(resp) + " | notes " + fmt(notes) + " | rag " + fmt(rag) + " | total " + fmt(total));
+        contextLabel.setText("Mode: " + lastMode + " | Req " + fmt(req) + " | Resp " + fmt(resp) + " | Notes " + (notesCheck.isSelected() ? fmt(notes) : "off") + " | RAG " + (ragCheck.isSelected() ? fmt(rag) : "off") + " | Total " + fmt(total));
     }
 
-    private static String fmt(int tokens) {
-        return String.format("%.1fk", tokens / 1000.0D);
-    }
+    private static String fmt(int tokens) { return String.format("%.1fk", tokens / 1000.0D); }
 
     private void toggleRightPane() {
         if (rightPaneVisible) {
@@ -944,9 +805,7 @@ public final class CockpitPanel extends JPanel {
 
     private static String exportCurl(String raw) {
         String[] lines = raw.replace("\r\n", "\n").split("\n");
-        if (lines.length == 0) {
-            return "";
-        }
+        if (lines.length == 0) return "";
         String[] first = lines[0].split(" ");
         String method = first.length > 0 ? first[0] : "GET";
         String path = first.length > 1 ? first[1] : "/";
@@ -954,16 +813,10 @@ public final class CockpitPanel extends JPanel {
         String body = HttpText.body(raw);
         StringBuilder out = new StringBuilder("curl -i -X ").append(shell(method)).append(' ');
         for (String line : HttpText.headers(raw).replace("\r\n", "\n").split("\n")) {
-            if (line.toLowerCase().startsWith("host:")) {
-                continue;
-            }
-            if (line.contains(":")) {
-                out.append("-H ").append(shell(line)).append(' ');
-            }
+            if (line.toLowerCase().startsWith("host:")) continue;
+            if (line.contains(":")) out.append("-H ").append(shell(line)).append(' ');
         }
-        if (!body.isBlank()) {
-            out.append("--data-binary ").append(shell(body)).append(' ');
-        }
+        if (!body.isBlank()) out.append("--data-binary ").append(shell(body)).append(' ');
         out.append(shell("https://" + host + path));
         return out.toString();
     }
@@ -977,20 +830,14 @@ public final class CockpitPanel extends JPanel {
         String body = HttpText.body(raw);
         StringBuilder headers = new StringBuilder();
         for (String line : HttpText.headers(raw).replace("\r\n", "\n").split("\n")) {
-            if (line.toLowerCase().startsWith("host:")) {
-                continue;
-            }
+            if (line.toLowerCase().startsWith("host:")) continue;
             int colon = line.indexOf(':');
-            if (colon > 0) {
-                headers.append("    ").append(JsonUtil.quote(line.substring(0, colon).trim())).append(": ").append(JsonUtil.quote(line.substring(colon + 1).trim())).append(",\n");
-            }
+            if (colon > 0) headers.append("    ").append(JsonUtil.quote(line.substring(0, colon).trim())).append(": ").append(JsonUtil.quote(line.substring(colon + 1).trim())).append(",\n");
         }
         return "import requests\n\nurl = " + JsonUtil.quote("https://" + host + path) + "\nheaders = {\n" + headers + "}\nbody = " + JsonUtil.quote(body) + "\n\nr = requests.request(" + JsonUtil.quote(method) + ", url, headers=headers, data=body)\nprint(r.status_code)\nprint(r.text)\n";
     }
 
-    private static String shell(String value) {
-        return "'" + Objects.toString(value, "").replace("'", "'\\''") + "'";
-    }
+    private static String shell(String value) { return "'" + Objects.toString(value, "").replace("'", "'\\''") + "'"; }
 
     private void setStatus(String status) {
         statusLabel.setText(status);
@@ -1000,9 +847,7 @@ public final class CockpitPanel extends JPanel {
     private void showError(String message, Throwable throwable) {
         String detail = throwable == null ? "" : throwable.getClass().getSimpleName() + ": " + throwable.getMessage();
         setStatus(message + (detail.isBlank() ? "" : " - " + detail));
-        if (throwable != null) {
-            api.logging().logToError(message, throwable);
-        }
+        if (throwable != null) api.logging().logToError(message, throwable);
         JOptionPane.showMessageDialog(this, message + (detail.isBlank() ? "" : "\n" + detail), "Burp Cockpit", JOptionPane.ERROR_MESSAGE);
     }
 
