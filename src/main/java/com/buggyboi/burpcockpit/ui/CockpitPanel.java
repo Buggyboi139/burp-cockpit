@@ -71,7 +71,6 @@ public final class CockpitPanel extends JPanel {
     private final JCheckBox ragCheck;
     private final JLabel statusLabel = new JLabel("Analysis ready.");
     private final JLabel historyLabel = new JLabel("0/0");
-    private final JLabel currentLabel = new JLabel("No request loaded");
     private final JLabel contextLabel = new JLabel("Chat: 0.0k | Resp: 0.0k | Notes 0.0k | RAG 0.0k | Total 0.0k");
 
     private JSplitPane mainSplitPane;
@@ -105,16 +104,12 @@ public final class CockpitPanel extends JPanel {
     }
 
     public void loadFromBurp(HttpRequestResponse pair, String source) {
-        if (pair == null) {
-            return;
-        }
+        if (pair == null) return;
         TextContextMenu.later(() -> loadSnapshot(TrafficSnapshot.from(pair, source)));
     }
 
     public void considerAutoCapture(HttpRequest request, HttpResponse response, String source) {
-        if (!settings.autoCaptureLatest()) {
-            return;
-        }
+        if (!settings.autoCaptureLatest()) return;
         String requestText = request == null ? "" : request.toString();
         String responseText = response == null ? "" : response.toString();
         HttpService service = request == null ? null : request.httpService();
@@ -139,7 +134,6 @@ public final class CockpitPanel extends JPanel {
         transcriptArea.setWrapStyleWord(true);
         notesArea.setLineWrap(true);
         notesArea.setWrapStyleWord(true);
-        currentLabel.setMaximumSize(new Dimension(520, 28));
     }
 
     private void buildUi() {
@@ -210,8 +204,6 @@ public final class CockpitPanel extends JPanel {
         bar.add(thinkingCheck);
         bar.add(deltaCheck);
         bar.add(ragCheck);
-        bar.addSeparator();
-        bar.add(currentLabel);
         return bar;
     }
 
@@ -305,11 +297,8 @@ public final class CockpitPanel extends JPanel {
         requestArea.setCaretPosition(0);
         responseArea.setText(snapshot.responseText());
         responseArea.setCaretPosition(0);
-        String summary = HttpText.shortSummary(snapshot.requestText(), snapshot.service());
-        currentLabel.setText(summary);
-        currentLabel.setToolTipText(HttpText.methodAndPath(snapshot.requestText()));
         historyLabel.setText(state.historyLabel());
-        setStatus("Loaded " + snapshot.source() + " at " + snapshot.capturedAt());
+        setStatus("Loaded " + HttpText.shortSummary(snapshot.requestText(), snapshot.service()));
         updateContextCounter();
     }
 
@@ -320,9 +309,6 @@ public final class CockpitPanel extends JPanel {
         }
         TrafficSnapshot snapshot = new TrafficSnapshot(service, requestArea.getText(), responseArea.getText(), Instant.now(), source);
         state.pushSnapshot(snapshot);
-        String summary = HttpText.shortSummary(snapshot.requestText(), snapshot.service());
-        currentLabel.setText(summary);
-        currentLabel.setToolTipText(HttpText.methodAndPath(snapshot.requestText()));
         historyLabel.setText(state.historyLabel());
         updateContextCounter();
     }
@@ -411,22 +397,18 @@ public final class CockpitPanel extends JPanel {
                         : PromptBuilder.chatPrompt(state, promptArea.getText(), activeNoteContent(), ragDump);
                 String system = PromptBuilder.systemPrompt(settings.includeThinking());
 
-                lumaraClient.streamChat(
-                        settings,
-                        system,
-                        prompt,
-                        contentToken -> TextContextMenu.later(() -> {
-                            if (contentStarted.compareAndSet(false, true)) {
-                                stopBusyIndicator();
-                                transcriptArea.setText("");
-                            }
-                            transcriptArea.append(contentToken);
-                            transcriptArea.setCaretPosition(transcriptArea.getDocument().getLength());
-                        }));
+                lumaraClient.streamChat(settings, system, prompt, contentToken -> TextContextMenu.later(() -> {
+                    if (contentStarted.compareAndSet(false, true)) {
+                        stopBusyIndicator();
+                        transcriptArea.setText("");
+                    }
+                    transcriptArea.append(contentToken);
+                    transcriptArea.setCaretPosition(transcriptArea.getDocument().getLength());
+                }));
 
                 TextContextMenu.later(() -> {
                     stopBusyIndicator();
-                    if (!contentStarted.get() && transcriptArea.getText().startsWith("Thinking")) {
+                    if (!contentStarted.get() && transcriptArea.getText().startsWith("Working")) {
                         transcriptArea.setText("No streamed content was returned by the model.");
                     }
                     state.lastPromptRequest(requestArea.getText());
@@ -458,9 +440,9 @@ public final class CockpitPanel extends JPanel {
     private void startBusyIndicator() {
         stopBusyIndicator();
         busyTick = 0;
-        transcriptArea.setText("Thinking...");
+        transcriptArea.setText("Working...");
         busyTimer = new Timer(450, e -> {
-            String[] states = {"Thinking", "Thinking.", "Thinking..", "Thinking..."};
+            String[] states = {"Working", "Working.", "Working..", "Working..."};
             transcriptArea.setText(states[busyTick++ % states.length]);
         });
         busyTimer.start();
@@ -474,9 +456,7 @@ public final class CockpitPanel extends JPanel {
     }
 
     private void appendAnalysisToNotes(String output) {
-        if (output == null || output.isBlank() || output.startsWith("Thinking")) {
-            return;
-        }
+        if (output == null || output.isBlank() || output.startsWith("Working")) return;
         String append = "\n\n## Analysis " + Instant.now() + "\n\n" + output.trim() + "\n";
         notesArea.append(append);
         quietSaveActiveNote();
@@ -484,9 +464,7 @@ public final class CockpitPanel extends JPanel {
 
     private String activeNoteContent() {
         String text = notesArea.getText();
-        if (!text.isBlank()) {
-            return text;
-        }
+        if (!text.isBlank()) return text;
         String name = selectedNoteName();
         return name.isBlank() ? "" : notesStore.read(name);
     }
@@ -503,15 +481,9 @@ public final class CockpitPanel extends JPanel {
         String selected = selectedNoteName();
         noteSelector.removeAllItems();
         List<String> names = notesStore.listNoteNames();
-        if (names.isEmpty()) {
-            names = List.of(notesStore.ensureNote("DEFAULT"));
-        }
-        for (String name : names) {
-            noteSelector.addItem(name);
-        }
-        if (!selected.isBlank()) {
-            selectNote(selected);
-        }
+        if (names.isEmpty()) names = List.of(notesStore.ensureNote("DEFAULT"));
+        for (String name : names) noteSelector.addItem(name);
+        if (!selected.isBlank()) selectNote(selected);
     }
 
     private void autoLoadHostNote(String hostLabel) {
@@ -534,18 +506,14 @@ public final class CockpitPanel extends JPanel {
                 break;
             }
         }
-        if (!found) {
-            noteSelector.addItem(clean);
-        }
+        if (!found) noteSelector.addItem(clean);
         noteSelector.setSelectedItem(clean);
     }
 
     private void loadSelectedNote() {
         quietSaveActiveNote();
         String name = selectedNoteName();
-        if (name.isBlank()) {
-            return;
-        }
+        if (name.isBlank()) return;
         notesStore.ensureNote(name);
         notesArea.setText(notesStore.read(name));
         notesArea.setCaretPosition(0);
@@ -574,9 +542,7 @@ public final class CockpitPanel extends JPanel {
 
     private void quietSaveActiveNote() {
         String name = selectedNoteName();
-        if (name.isBlank()) {
-            return;
-        }
+        if (name.isBlank()) return;
         try {
             notesStore.write(name, notesArea.getText());
             state.pinnedNoteName(name);
@@ -587,9 +553,7 @@ public final class CockpitPanel extends JPanel {
 
     private String selectedNoteName() {
         Object selected = noteSelector.getEditor().getItem();
-        if (selected == null) {
-            selected = noteSelector.getSelectedItem();
-        }
+        if (selected == null) selected = noteSelector.getSelectedItem();
         return NotesStore.sanitizeName(Objects.toString(selected, ""));
     }
 
@@ -646,15 +610,10 @@ public final class CockpitPanel extends JPanel {
     }
 
     private void selectToken(int value) {
-        if (value <= 1100) {
-            tokenSelector.setSelectedItem("1k");
-        } else if (value <= 2200) {
-            tokenSelector.setSelectedItem("2k");
-        } else if (value >= 90000) {
-            tokenSelector.setSelectedItem("96k");
-        } else {
-            tokenSelector.setSelectedItem("20k");
-        }
+        if (value <= 1100) tokenSelector.setSelectedItem("1k");
+        else if (value <= 2200) tokenSelector.setSelectedItem("2k");
+        else if (value >= 90000) tokenSelector.setSelectedItem("96k");
+        else tokenSelector.setSelectedItem("20k");
     }
 
     private void updateContextCounter() {
@@ -699,9 +658,7 @@ public final class CockpitPanel extends JPanel {
 
     private static String exportCurl(String raw) {
         String[] lines = raw.replace("\r\n", "\n").split("\n");
-        if (lines.length == 0) {
-            return "";
-        }
+        if (lines.length == 0) return "";
         String[] first = lines[0].split(" ");
         String method = first.length > 0 ? first[0] : "GET";
         String path = first.length > 1 ? first[1] : "/";
@@ -709,16 +666,10 @@ public final class CockpitPanel extends JPanel {
         String body = HttpText.body(raw);
         StringBuilder out = new StringBuilder("curl -i -X ").append(shell(method)).append(' ');
         for (String line : HttpText.headers(raw).replace("\r\n", "\n").split("\n")) {
-            if (line.toLowerCase().startsWith("host:")) {
-                continue;
-            }
-            if (line.contains(":")) {
-                out.append("-H ").append(shell(line)).append(' ');
-            }
+            if (line.toLowerCase().startsWith("host:")) continue;
+            if (line.contains(":")) out.append("-H ").append(shell(line)).append(' ');
         }
-        if (!body.isBlank()) {
-            out.append("--data-binary ").append(shell(body)).append(' ');
-        }
+        if (!body.isBlank()) out.append("--data-binary ").append(shell(body)).append(' ');
         out.append(shell("https://" + host + path));
         return out.toString();
     }
@@ -732,9 +683,7 @@ public final class CockpitPanel extends JPanel {
         String body = HttpText.body(raw);
         StringBuilder headers = new StringBuilder();
         for (String line : HttpText.headers(raw).replace("\r\n", "\n").split("\n")) {
-            if (line.toLowerCase().startsWith("host:")) {
-                continue;
-            }
+            if (line.toLowerCase().startsWith("host:")) continue;
             int colon = line.indexOf(':');
             if (colon > 0) {
                 headers.append("    ").append(JsonUtil.quote(line.substring(0, colon).trim())).append(": ").append(JsonUtil.quote(line.substring(colon + 1).trim())).append(",\n");
@@ -755,9 +704,7 @@ public final class CockpitPanel extends JPanel {
     private void showError(String message, Throwable throwable) {
         String detail = throwable == null ? "" : throwable.getClass().getSimpleName() + ": " + throwable.getMessage();
         setStatus(message + (detail.isBlank() ? "" : " - " + detail));
-        if (throwable != null) {
-            api.logging().logToError(message, throwable);
-        }
+        if (throwable != null) api.logging().logToError(message, throwable);
         JOptionPane.showMessageDialog(this, message + (detail.isBlank() ? "" : "\n" + detail), "Burp Cockpit", JOptionPane.ERROR_MESSAGE);
     }
 
