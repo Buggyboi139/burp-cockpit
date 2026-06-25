@@ -19,10 +19,8 @@ import javax.swing.JButton;
 import javax.swing.JCheckBox;
 import javax.swing.JComboBox;
 import javax.swing.JLabel;
-import javax.swing.JMenuItem;
 import javax.swing.JOptionPane;
 import javax.swing.JPanel;
-import javax.swing.JPopupMenu;
 import javax.swing.JScrollPane;
 import javax.swing.JSplitPane;
 import javax.swing.JTabbedPane;
@@ -40,10 +38,12 @@ import java.awt.Insets;
 import java.awt.Toolkit;
 import java.awt.datatransfer.StringSelection;
 import java.time.Instant;
+import java.util.ArrayDeque;
+import java.util.Deque;
 import java.util.List;
 import java.util.Objects;
 import java.util.Optional;
-import java.util.concurrent.atomic.AtomicReference;
+import java.util.concurrent.atomic.AtomicBoolean;
 
 import static burp.api.montoya.http.message.requests.HttpRequest.httpRequest;
 
@@ -57,6 +57,7 @@ public final class CockpitPanel extends JPanel {
     private final JTextArea requestArea = TextContextMenu.area(24, 90, true);
     private final JTextArea responseArea = TextContextMenu.area(12, 90, false);
     private final JTextArea transcriptArea = TextContextMenu.area(22, 70, false);
+    private final JTextArea thinkingArea = TextContextMenu.area(2, 70, false);
     private final JTextArea promptArea = TextContextMenu.area(4, 70, true);
     private final JTextArea notesArea = TextContextMenu.area(24, 70, true);
 
@@ -67,11 +68,9 @@ public final class CockpitPanel extends JPanel {
 
     private final JComboBox<String> tokenSelector = new JComboBox<>(new String[]{"1k", "2k", "20k", "96k"});
     private final JComboBox<String> noteSelector = new JComboBox<>();
-    private final JCheckBox streamCheck;
     private final JCheckBox thinkingCheck;
     private final JCheckBox deltaCheck;
     private final JCheckBox ragCheck;
-    private final JCheckBox injectPinnedNoteCheck;
     private final JLabel statusLabel = new JLabel("Analysis ready.");
     private final JLabel historyLabel = new JLabel("0/0");
     private final JLabel currentLabel = new JLabel("No request loaded");
@@ -83,6 +82,7 @@ public final class CockpitPanel extends JPanel {
     private boolean rightPaneVisible = true;
     private Thread currentAiThread;
     private String lastRagDump = "";
+    private final StringBuilder thinkingBuffer = new StringBuilder();
 
     public CockpitPanel(MontoyaApi api, CockpitState state, LumaraClient lumaraClient) {
         super(new BorderLayout());
@@ -95,11 +95,10 @@ public final class CockpitPanel extends JPanel {
         this.modelField = TextContextMenu.field(settings.model());
         this.ragEndpointField = TextContextMenu.field(settings.ragSearchEndpoint());
         this.notesDirField = TextContextMenu.field(settings.notesDirectory().toString());
-        this.streamCheck = new JCheckBox("Stream", settings.streamChat());
         this.thinkingCheck = new JCheckBox("Thinking", settings.includeThinking());
         this.deltaCheck = new JCheckBox("Delta only", settings.deltaOnly());
         this.ragCheck = new JCheckBox("RAG", settings.injectRag());
-        this.injectPinnedNoteCheck = new JCheckBox("Notes", settings.injectPinnedNote());
+        configureTextAreas();
         buildUi();
         applySettingsToControls();
         refreshNoteList();
@@ -107,12 +106,16 @@ public final class CockpitPanel extends JPanel {
     }
 
     public void loadFromBurp(HttpRequestResponse pair, String source) {
-        if (pair == null) return;
+        if (pair == null) {
+            return;
+        }
         TextContextMenu.later(() -> loadSnapshot(TrafficSnapshot.from(pair, source)));
     }
 
     public void considerAutoCapture(HttpRequest request, HttpResponse response, String source) {
-        if (!settings.autoCaptureLatest()) return;
+        if (!settings.autoCaptureLatest()) {
+            return;
+        }
         String requestText = request == null ? "" : request.toString();
         String responseText = response == null ? "" : response.toString();
         HttpService service = request == null ? null : request.httpService();
@@ -127,15 +130,18 @@ public final class CockpitPanel extends JPanel {
     }
 
     public void ensureCurrentHostNote() {
-        TextContextMenu.later(() -> {
-            syncSnapshotFromEditors("note sync");
-            String name = notesStore.defaultNoteNameForHost(state.current().map(TrafficSnapshot::hostLabel).orElse("DEFAULT"));
-            notesStore.ensureNote(name);
-            selectNote(name);
-            loadSelectedNote();
-            state.pinnedNoteName(name);
-            setStatus("Loaded host note: " + name);
-        });
+        TextContextMenu.later(() -> autoLoadHostNote(state.current().map(TrafficSnapshot::hostLabel).orElse("DEFAULT")));
+    }
+
+    private void configureTextAreas() {
+        promptArea.setLineWrap(true);
+        promptArea.setWrapStyleWord(true);
+        transcriptArea.setLineWrap(true);
+        transcriptArea.setWrapStyleWord(true);
+        thinkingArea.setLineWrap(true);
+        thinkingArea.setWrapStyleWord(true);
+        notesArea.setLineWrap(true);
+        notesArea.setWrapStyleWord(true);
     }
 
     private void buildUi() {
@@ -169,10 +175,6 @@ public final class CockpitPanel extends JPanel {
         newButton.addActionListener(e -> openStarterRequest());
         bar.add(newButton);
 
-        JButton importRaw = new JButton("Import Raw");
-        importRaw.addActionListener(e -> importRawRequest());
-        bar.add(importRaw);
-
         JButton previous = new JButton("←");
         previous.addActionListener(e -> state.previous().ifPresent(this::loadSnapshotWithoutPush));
         bar.add(previous);
@@ -184,10 +186,6 @@ public final class CockpitPanel extends JPanel {
         JButton send = new JButton("Send");
         send.addActionListener(e -> sendCurrentRequest());
         bar.add(send);
-
-        JButton analyze = new JButton("Analyze");
-        analyze.addActionListener(e -> runAnalysisFromUi());
-        bar.add(analyze);
 
         JButton exportCurl = new JButton("Export curl");
         exportCurl.addActionListener(e -> exportCurrent("curl"));
@@ -211,11 +209,9 @@ public final class CockpitPanel extends JPanel {
         bar.addSeparator();
         bar.add(new JLabel("Tokens "));
         bar.add(tokenSelector);
-        bar.add(streamCheck);
         bar.add(thinkingCheck);
         bar.add(deltaCheck);
         bar.add(ragCheck);
-        bar.add(injectPinnedNoteCheck);
         bar.addSeparator();
         bar.add(currentLabel);
         return bar;
@@ -227,7 +223,7 @@ public final class CockpitPanel extends JPanel {
 
         JPanel top = new JPanel(new BorderLayout(4, 4));
         promptArea.setText("What are the highest-value bug bounty tests for this request/response?");
-        top.add(wrap("Prompt / mutation instruction", promptArea), BorderLayout.CENTER);
+        top.add(wrap("Prompt", promptArea), BorderLayout.CENTER);
 
         JPanel buttons = new JPanel(new FlowLayout(FlowLayout.LEFT));
         JButton chat = new JButton("Send Chat");
@@ -245,9 +241,10 @@ public final class CockpitPanel extends JPanel {
         top.add(buttons, BorderLayout.SOUTH);
         panel.add(top, BorderLayout.NORTH);
 
-        JPanel center = new JPanel(new BorderLayout());
+        JPanel center = new JPanel(new BorderLayout(4, 4));
         center.add(contextLabel, BorderLayout.NORTH);
-        center.add(wrap("Analysis", transcriptArea), BorderLayout.CENTER);
+        center.add(wrap("Thinking preview", thinkingArea), BorderLayout.CENTER);
+        center.add(wrap("Analysis", transcriptArea), BorderLayout.SOUTH);
         panel.add(center, BorderLayout.CENTER);
         return panel;
     }
@@ -259,7 +256,7 @@ public final class CockpitPanel extends JPanel {
         JPanel top = new JPanel(new FlowLayout(FlowLayout.LEFT));
         top.add(new JLabel("Note:"));
         noteSelector.setEditable(true);
-        noteSelector.setPrototypeDisplayValue("calendar.google.com........................");
+        noteSelector.setPrototypeDisplayValue("script.google.com........................");
         top.add(noteSelector);
 
         JButton load = new JButton("Load");
@@ -274,25 +271,8 @@ public final class CockpitPanel extends JPanel {
         refresh.addActionListener(e -> refreshNoteList());
         top.add(refresh);
 
-        JButton hostNote = new JButton("Host Note");
-        hostNote.addActionListener(e -> ensureCurrentHostNote());
-        top.add(hostNote);
-
-        JButton pin = new JButton("Pin");
-        pin.addActionListener(e -> {
-            String name = selectedNoteName();
-            state.pinnedNoteName(name);
-            setStatus("Pinned note: " + name);
-            updateContextCounter();
-        });
-        top.add(pin);
-
-        JButton ingest = new JButton("Ingest Notes");
-        ingest.addActionListener(e -> ingestNotes());
-        top.add(ingest);
-
         panel.add(top, BorderLayout.NORTH);
-        panel.add(wrap("Shared notes", notesArea), BorderLayout.CENTER);
+        panel.add(wrap("Local Markdown notes", notesArea), BorderLayout.CENTER);
         return panel;
     }
 
@@ -305,11 +285,9 @@ public final class CockpitPanel extends JPanel {
 
     private void applySettingsToControls() {
         selectToken(settings.tokenBudget());
-        streamCheck.addActionListener(e -> settings.streamChat(streamCheck.isSelected()));
         thinkingCheck.addActionListener(e -> settings.includeThinking(thinkingCheck.isSelected()));
         deltaCheck.addActionListener(e -> settings.deltaOnly(deltaCheck.isSelected()));
         ragCheck.addActionListener(e -> settings.injectRag(ragCheck.isSelected()));
-        injectPinnedNoteCheck.addActionListener(e -> settings.injectPinnedNote(injectPinnedNoteCheck.isSelected()));
         tokenSelector.addActionListener(e -> settings.tokenBudget(parseTokenSelection()));
     }
 
@@ -318,26 +296,11 @@ public final class CockpitPanel extends JPanel {
         loadSnapshot(new TrafficSnapshot(null, starter, "", Instant.now(), "new"));
     }
 
-    private void importRawRequest() {
-        JTextArea raw = TextContextMenu.area(22, 90, true);
-        raw.setText(requestArea.getText());
-        int choice = JOptionPane.showConfirmDialog(this, new JScrollPane(raw), "Import Raw Request", JOptionPane.OK_CANCEL_OPTION, JOptionPane.PLAIN_MESSAGE);
-        if (choice == JOptionPane.OK_OPTION) {
-            HttpService service = HttpText.inferService(raw.getText(), true).orElse(null);
-            loadSnapshot(new TrafficSnapshot(service, raw.getText(), "", Instant.now(), "import raw"));
-        }
-    }
-
     private void loadSnapshot(TrafficSnapshot snapshot) {
+        quietSaveActiveNote();
         state.pushSnapshot(snapshot);
         loadSnapshotWithoutPush(snapshot);
-        String name = notesStore.defaultNoteNameForHost(snapshot.hostLabel());
-        if (state.pinnedNoteName().isBlank()) {
-            notesStore.ensureNote(name);
-            state.pinnedNoteName(name);
-            refreshNoteList();
-            selectNote(name);
-        }
+        autoLoadHostNote(snapshot.hostLabel());
     }
 
     private void loadSnapshotWithoutPush(TrafficSnapshot snapshot) {
@@ -353,7 +316,9 @@ public final class CockpitPanel extends JPanel {
 
     private void syncSnapshotFromEditors(String source) {
         HttpService service = state.currentService();
-        if (service == null) service = HttpText.inferService(requestArea.getText(), true).orElse(null);
+        if (service == null) {
+            service = HttpText.inferService(requestArea.getText(), true).orElse(null);
+        }
         TrafficSnapshot snapshot = new TrafficSnapshot(service, requestArea.getText(), responseArea.getText(), Instant.now(), source);
         state.pushSnapshot(snapshot);
         currentLabel.setText(HttpText.shortSummary(snapshot.requestText(), snapshot.service()));
@@ -363,6 +328,7 @@ public final class CockpitPanel extends JPanel {
 
     private void sendCurrentRequest() {
         syncSettingsFromControls();
+        quietSaveActiveNote();
         syncSnapshotFromEditors("pre-send");
         String raw = HttpText.normalizeLineEndings(requestArea.getText());
         if (looksLikeBurpErrorHtml(raw)) {
@@ -403,9 +369,10 @@ public final class CockpitPanel extends JPanel {
 
     private void runAi(boolean analysis) {
         syncSettingsFromControls();
+        quietSaveActiveNote();
         syncSnapshotFromEditors(analysis ? "analysis context" : "chat context");
         if (looksLikeBurpErrorHtml(requestArea.getText())) {
-            showError("The current request is Burp's HTML proxy error page. Your Lumara endpoint was pointed at Burp. Reload the original request, then run analysis again.", null);
+            showError("The current request is Burp's HTML proxy error page. Reload the original request, then run analysis again.", null);
             return;
         }
         if (currentAiThread != null && currentAiThread.isAlive()) {
@@ -413,64 +380,108 @@ public final class CockpitPanel extends JPanel {
             return;
         }
         transcriptArea.setText("");
+        thinkingArea.setText("");
+        thinkingBuffer.setLength(0);
         lastRagDump = "";
         updateContextCounter();
-        setStatus(settings.injectRag() ? "Preparing RAG context..." : "Calling Lumara...");
+        setStatus(settings.injectRag() ? "Preparing RAG context..." : "Streaming response...");
 
         Thread worker = new Thread(() -> {
-            String ragDump = "";
-            if (settings.injectRag()) {
-                try {
-                    String query = PromptBuilder.ragQuery(state, promptArea.getText());
-                    ragDump = lumaraClient.ragSearch(settings, query, 8, "both");
-                } catch (Throwable throwable) {
-                    ragDump = "RAG injection failed: " + throwable.getMessage();
+            AtomicBoolean contentStarted = new AtomicBoolean(false);
+            try {
+                String ragDump = "";
+                if (settings.injectRag()) {
+                    try {
+                        String query = PromptBuilder.ragQuery(state, promptArea.getText());
+                        ragDump = lumaraClient.ragSearch(settings, query, 8, "both");
+                    } catch (Throwable throwable) {
+                        ragDump = "RAG injection failed: " + Objects.toString(throwable.getMessage(), throwable.getClass().getSimpleName());
+                    }
                 }
+
+                String finalRagDump = ragDump;
+                TextContextMenu.later(() -> {
+                    lastRagDump = finalRagDump;
+                    updateContextCounter();
+                    setStatus("Streaming response...");
+                });
+
+                String prompt = analysis
+                        ? PromptBuilder.analysisPrompt(state, promptArea.getText(), activeNoteContent(), ragDump)
+                        : PromptBuilder.chatPrompt(state, promptArea.getText(), activeNoteContent(), ragDump);
+                String system = PromptBuilder.systemPrompt(settings.includeThinking());
+
+                lumaraClient.streamChat(
+                        settings,
+                        system,
+                        prompt,
+                        thinkingToken -> TextContextMenu.later(() -> appendThinking(thinkingToken, contentStarted.get())),
+                        contentToken -> TextContextMenu.later(() -> {
+                            if (contentStarted.compareAndSet(false, true)) {
+                                thinkingBuffer.setLength(0);
+                                thinkingArea.setText("");
+                            }
+                            transcriptArea.append(contentToken);
+                            transcriptArea.setCaretPosition(transcriptArea.getDocument().getLength());
+                        }));
+
+                TextContextMenu.later(() -> {
+                    state.lastPromptRequest(requestArea.getText());
+                    if (analysis) {
+                        appendAnalysisToNotes(transcriptArea.getText());
+                    }
+                    setStatus("AI response ready.");
+                });
+            } catch (InterruptedException interrupted) {
+                Thread.currentThread().interrupt();
+                TextContextMenu.later(() -> setStatus("AI request cancelled."));
+            } catch (Throwable throwable) {
+                TextContextMenu.later(() -> showError("Lumara call failed", throwable));
+            } finally {
+                currentAiThread = null;
             }
-            String pinned = pinnedNoteContent();
-            String prompt = analysis
-                    ? PromptBuilder.analysisPrompt(state, promptArea.getText(), pinned, ragDump)
-                    : PromptBuilder.chatPrompt(state, promptArea.getText(), pinned, ragDump);
-            String finalRagDump = ragDump;
-            TextContextMenu.later(() -> {
-                lastRagDump = finalRagDump;
-                updateContextCounter();
-                setStatus("Calling Lumara...");
-            });
-            AtomicReference<StringBuilder> buffer = new AtomicReference<>(new StringBuilder());
-            String system = PromptBuilder.systemPrompt(settings.includeThinking());
-            Thread streamThread = lumaraClient.streamChat(settings, system, prompt,
-                    token -> TextContextMenu.later(() -> {
-                        buffer.get().append(token);
-                        transcriptArea.append(token);
-                        transcriptArea.setCaretPosition(transcriptArea.getDocument().getLength());
-                    }),
-                    throwable -> TextContextMenu.later(() -> showError("Lumara call failed", throwable)),
-                    () -> TextContextMenu.later(() -> {
-                        state.lastPromptRequest(requestArea.getText());
-                        maybeAppendAnalysisToNotes(buffer.get().toString(), analysis);
-                        setStatus("AI response ready.");
-                    }));
-            currentAiThread = streamThread;
-        }, "burp-cockpit-ai-prep");
+        }, "burp-cockpit-ai");
         currentAiThread = worker;
         worker.setDaemon(true);
         worker.start();
     }
 
-    private void maybeAppendAnalysisToNotes(String output, boolean analysis) {
-        if (!analysis || output == null || output.isBlank()) return;
-        if (notesArea.getText().isBlank()) loadSelectedNote();
-        String append = "\n\n## Analysis " + Instant.now() + "\n\n" + output.trim() + "\n";
-        notesArea.append(append);
-        saveSelectedNote();
+    private void appendThinking(String token, boolean contentStarted) {
+        if (contentStarted || !settings.includeThinking()) {
+            return;
+        }
+        thinkingBuffer.append(token);
+        String[] lines = thinkingBuffer.toString().replace("\r\n", "\n").replace('\r', '\n').split("\n", -1);
+        Deque<String> lastLines = new ArrayDeque<>();
+        for (String line : lines) {
+            if (line.isBlank() && lastLines.isEmpty()) {
+                continue;
+            }
+            lastLines.addLast(line);
+            while (lastLines.size() > 2) {
+                lastLines.removeFirst();
+            }
+        }
+        thinkingArea.setText(String.join("\n", lastLines));
+        thinkingArea.setCaretPosition(thinkingArea.getDocument().getLength());
     }
 
-    private String pinnedNoteContent() {
-        if (!settings.injectPinnedNote()) return "";
-        String pinned = state.pinnedNoteName();
-        if (pinned.isBlank()) pinned = selectedNoteName();
-        return pinned.isBlank() ? "" : notesStore.read(pinned);
+    private void appendAnalysisToNotes(String output) {
+        if (output == null || output.isBlank()) {
+            return;
+        }
+        String append = "\n\n## Analysis " + Instant.now() + "\n\n" + output.trim() + "\n";
+        notesArea.append(append);
+        quietSaveActiveNote();
+    }
+
+    private String activeNoteContent() {
+        String text = notesArea.getText();
+        if (!text.isBlank()) {
+            return text;
+        }
+        String name = selectedNoteName();
+        return name.isBlank() ? "" : notesStore.read(name);
     }
 
     private void stopCurrentAiWorker() {
@@ -484,9 +495,26 @@ public final class CockpitPanel extends JPanel {
         String selected = selectedNoteName();
         noteSelector.removeAllItems();
         List<String> names = notesStore.listNoteNames();
-        if (names.isEmpty()) names = List.of(notesStore.ensureNote("DEFAULT"));
-        for (String name : names) noteSelector.addItem(name);
-        if (!selected.isBlank()) selectNote(selected);
+        if (names.isEmpty()) {
+            names = List.of(notesStore.ensureNote("DEFAULT"));
+        }
+        for (String name : names) {
+            noteSelector.addItem(name);
+        }
+        if (!selected.isBlank()) {
+            selectNote(selected);
+        }
+    }
+
+    private void autoLoadHostNote(String hostLabel) {
+        String name = notesStore.defaultNoteNameForHost(hostLabel);
+        notesStore.ensureNote(name);
+        refreshNoteList();
+        selectNote(name);
+        notesArea.setText(notesStore.read(name));
+        notesArea.setCaretPosition(0);
+        state.pinnedNoteName(name);
+        updateContextCounter();
     }
 
     private void selectNote(String name) {
@@ -498,16 +526,22 @@ public final class CockpitPanel extends JPanel {
                 break;
             }
         }
-        if (!found) noteSelector.addItem(clean);
+        if (!found) {
+            noteSelector.addItem(clean);
+        }
         noteSelector.setSelectedItem(clean);
     }
 
     private void loadSelectedNote() {
+        quietSaveActiveNote();
         String name = selectedNoteName();
-        if (name.isBlank()) return;
+        if (name.isBlank()) {
+            return;
+        }
         notesStore.ensureNote(name);
         notesArea.setText(notesStore.read(name));
         notesArea.setCaretPosition(0);
+        state.pinnedNoteName(name);
         setStatus("Loaded note: " + name);
         updateContextCounter();
     }
@@ -522,46 +556,32 @@ public final class CockpitPanel extends JPanel {
             notesStore.write(name, notesArea.getText());
             refreshNoteList();
             selectNote(name);
-            setStatus("Saved note: " + name);
+            state.pinnedNoteName(name);
+            setStatus("Saved note locally: " + name);
             updateContextCounter();
-            if (settings.injectRag()) saveNoteToRag(name);
         } catch (Throwable throwable) {
             showError("Failed to save note", throwable);
         }
     }
 
-    private void saveNoteToRag(String name) {
-        String body = notesArea.getText();
-        String target = state.current().map(TrafficSnapshot::hostLabel).orElse("");
-        Thread thread = new Thread(() -> {
-            try {
-                lumaraClient.saveNote(settings, name, body, target, name + ".md", false);
-            } catch (Throwable throwable) {
-                api.logging().logToError("Burp Cockpit failed to save note to RAG", throwable);
-            }
-        }, "burp-cockpit-save-note-rag");
-        thread.setDaemon(true);
-        thread.start();
-    }
-
-    private void ingestNotes() {
-        syncSettingsFromControls();
-        setStatus("Asking Lumara RAG to ingest notes/library...");
-        Thread thread = new Thread(() -> {
-            try {
-                lumaraClient.ingest(settings, "both");
-                TextContextMenu.later(() -> setStatus("Lumara RAG ingest requested."));
-            } catch (Throwable throwable) {
-                TextContextMenu.later(() -> showError("Lumara RAG ingest failed", throwable));
-            }
-        }, "burp-cockpit-ingest");
-        thread.setDaemon(true);
-        thread.start();
+    private void quietSaveActiveNote() {
+        String name = selectedNoteName();
+        if (name.isBlank()) {
+            return;
+        }
+        try {
+            notesStore.write(name, notesArea.getText());
+            state.pinnedNoteName(name);
+        } catch (Throwable throwable) {
+            api.logging().logToError("Burp Cockpit failed to auto-save note", throwable);
+        }
     }
 
     private String selectedNoteName() {
         Object selected = noteSelector.getEditor().getItem();
-        if (selected == null) selected = noteSelector.getSelectedItem();
+        if (selected == null) {
+            selected = noteSelector.getSelectedItem();
+        }
         return NotesStore.sanitizeName(Objects.toString(selected, ""));
     }
 
@@ -601,11 +621,9 @@ public final class CockpitPanel extends JPanel {
         settings.model(modelField.getText());
         settings.ragSearchEndpoint(ragEndpointField.getText());
         settings.notesDirectory(notesDirField.getText());
-        settings.streamChat(streamCheck.isSelected());
         settings.includeThinking(thinkingCheck.isSelected());
         settings.deltaOnly(deltaCheck.isSelected());
         settings.injectRag(ragCheck.isSelected());
-        settings.injectPinnedNote(injectPinnedNoteCheck.isSelected());
         settings.tokenBudget(parseTokenSelection());
     }
 
@@ -620,16 +638,21 @@ public final class CockpitPanel extends JPanel {
     }
 
     private void selectToken(int value) {
-        if (value <= 1100) tokenSelector.setSelectedItem("1k");
-        else if (value <= 2200) tokenSelector.setSelectedItem("2k");
-        else if (value >= 90000) tokenSelector.setSelectedItem("96k");
-        else tokenSelector.setSelectedItem("20k");
+        if (value <= 1100) {
+            tokenSelector.setSelectedItem("1k");
+        } else if (value <= 2200) {
+            tokenSelector.setSelectedItem("2k");
+        } else if (value >= 90000) {
+            tokenSelector.setSelectedItem("96k");
+        } else {
+            tokenSelector.setSelectedItem("20k");
+        }
     }
 
     private void updateContextCounter() {
         int chat = PromptBuilder.estimatedTokens(requestArea.getText());
         int resp = PromptBuilder.estimatedTokens(responseArea.getText());
-        int notes = PromptBuilder.estimatedTokens(pinnedNoteContent());
+        int notes = PromptBuilder.estimatedTokens(activeNoteContent());
         int rag = PromptBuilder.estimatedTokens(lastRagDump);
         int total = chat + resp + notes + rag;
         contextLabel.setText("Chat: " + fmt(chat) + " | Resp: " + fmt(resp) + " | Notes " + fmt(notes) + " | RAG " + fmt(rag) + " | Total " + fmt(total));
@@ -668,7 +691,9 @@ public final class CockpitPanel extends JPanel {
 
     private static String exportCurl(String raw) {
         String[] lines = raw.replace("\r\n", "\n").split("\n");
-        if (lines.length == 0) return "";
+        if (lines.length == 0) {
+            return "";
+        }
         String[] first = lines[0].split(" ");
         String method = first.length > 0 ? first[0] : "GET";
         String path = first.length > 1 ? first[1] : "/";
@@ -676,10 +701,16 @@ public final class CockpitPanel extends JPanel {
         String body = HttpText.body(raw);
         StringBuilder out = new StringBuilder("curl -i -X ").append(shell(method)).append(' ');
         for (String line : HttpText.headers(raw).replace("\r\n", "\n").split("\n")) {
-            if (line.toLowerCase().startsWith("host:")) continue;
-            if (line.contains(":")) out.append("-H ").append(shell(line)).append(' ');
+            if (line.toLowerCase().startsWith("host:")) {
+                continue;
+            }
+            if (line.contains(":")) {
+                out.append("-H ").append(shell(line)).append(' ');
+            }
         }
-        if (!body.isBlank()) out.append("--data-binary ").append(shell(body)).append(' ');
+        if (!body.isBlank()) {
+            out.append("--data-binary ").append(shell(body)).append(' ');
+        }
         out.append(shell("https://" + host + path));
         return out.toString();
     }
@@ -693,9 +724,13 @@ public final class CockpitPanel extends JPanel {
         String body = HttpText.body(raw);
         StringBuilder headers = new StringBuilder();
         for (String line : HttpText.headers(raw).replace("\r\n", "\n").split("\n")) {
-            if (line.toLowerCase().startsWith("host:")) continue;
+            if (line.toLowerCase().startsWith("host:")) {
+                continue;
+            }
             int colon = line.indexOf(':');
-            if (colon > 0) headers.append("    ").append(JsonUtil.quote(line.substring(0, colon).trim())).append(": ").append(JsonUtil.quote(line.substring(colon + 1).trim())).append(",\n");
+            if (colon > 0) {
+                headers.append("    ").append(JsonUtil.quote(line.substring(0, colon).trim())).append(": ").append(JsonUtil.quote(line.substring(colon + 1).trim())).append(",\n");
+            }
         }
         return "import requests\n\nurl = " + JsonUtil.quote("https://" + host + path) + "\nheaders = {\n" + headers + "}\nbody = " + JsonUtil.quote(body) + "\n\nr = requests.request(" + JsonUtil.quote(method) + ", url, headers=headers, data=body)\nprint(r.status_code)\nprint(r.text)\n";
     }
@@ -712,7 +747,9 @@ public final class CockpitPanel extends JPanel {
     private void showError(String message, Throwable throwable) {
         String detail = throwable == null ? "" : throwable.getClass().getSimpleName() + ": " + throwable.getMessage();
         setStatus(message + (detail.isBlank() ? "" : " - " + detail));
-        if (throwable != null) api.logging().logToError(message, throwable);
+        if (throwable != null) {
+            api.logging().logToError(message, throwable);
+        }
         JOptionPane.showMessageDialog(this, message + (detail.isBlank() ? "" : "\n" + detail), "Burp Cockpit", JOptionPane.ERROR_MESSAGE);
     }
 
