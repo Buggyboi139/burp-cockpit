@@ -1,11 +1,17 @@
 package com.buggyboi.burpcockpit.ui;
 
+import javax.swing.JButton;
+import javax.swing.JLabel;
 import javax.swing.JMenuItem;
+import javax.swing.JPanel;
 import javax.swing.JPopupMenu;
 import javax.swing.JTextArea;
 import javax.swing.JTextField;
 import javax.swing.SwingUtilities;
 import javax.swing.text.JTextComponent;
+import java.awt.BorderLayout;
+import java.awt.Component;
+import java.awt.Container;
 import java.awt.event.MouseAdapter;
 import java.awt.event.MouseEvent;
 
@@ -54,9 +60,14 @@ public final class TextContextMenu {
     }
 
     public static JTextArea area(int rows, int cols, boolean editable) {
-        JTextArea area = isPromptInput(rows, cols, editable)
-                ? new AutoClearingPromptArea(rows, cols)
-                : new JTextArea(rows, cols);
+        JTextArea area;
+        if (isPromptInput(rows, cols, editable)) {
+            area = new AutoClearingPromptArea(rows, cols);
+        } else if (isChatTranscript(rows, cols, editable)) {
+            area = new ChatTranscriptArea(rows, cols);
+        } else {
+            area = new JTextArea(rows, cols);
+        }
         area.setEditable(editable);
         area.setLineWrap(false);
         area.setWrapStyleWord(false);
@@ -80,6 +91,74 @@ public final class TextContextMenu {
 
     private static boolean isPromptInput(int rows, int cols, boolean editable) {
         return editable && rows == 4 && cols == 70;
+    }
+
+    private static boolean isChatTranscript(int rows, int cols, boolean editable) {
+        return !editable && rows == 24 && cols == 70;
+    }
+
+    private static final class ChatTranscriptArea extends JTextArea {
+        private static final String CLEAR_CHAT_BUTTON_NAME = "burp-cockpit-clear-chat";
+        private boolean clearButtonInstalled;
+
+        private ChatTranscriptArea(int rows, int cols) {
+            super(rows, cols);
+        }
+
+        @Override
+        public void addNotify() {
+            super.addNotify();
+            SwingUtilities.invokeLater(this::installClearChatButton);
+        }
+
+        private void installClearChatButton() {
+            if (clearButtonInstalled) {
+                return;
+            }
+            Container viewport = getParent();
+            if (viewport == null) {
+                return;
+            }
+            Container scroll = viewport.getParent();
+            if (scroll == null) {
+                return;
+            }
+            Container center = scroll.getParent();
+            if (!(center instanceof JPanel centerPanel) || !(centerPanel.getLayout() instanceof BorderLayout centerLayout)) {
+                return;
+            }
+            Container analysis = centerPanel.getParent();
+            if (!(analysis instanceof JPanel analysisPanel) || !(analysisPanel.getLayout() instanceof BorderLayout analysisLayout)) {
+                return;
+            }
+            Component top = analysisLayout.getLayoutComponent(BorderLayout.NORTH);
+            if (!(top instanceof JPanel topPanel) || !(topPanel.getLayout() instanceof BorderLayout topLayout)) {
+                return;
+            }
+            Component buttonsComponent = topLayout.getLayoutComponent(BorderLayout.SOUTH);
+            if (!(buttonsComponent instanceof JPanel buttons)) {
+                return;
+            }
+            for (Component component : buttons.getComponents()) {
+                if (CLEAR_CHAT_BUTTON_NAME.equals(component.getName())) {
+                    clearButtonInstalled = true;
+                    return;
+                }
+            }
+            JButton clearChat = new JButton("Clear Chat");
+            clearChat.setName(CLEAR_CHAT_BUTTON_NAME);
+            clearChat.addActionListener(e -> {
+                setText("");
+                Component statusComponent = centerLayout.getLayoutComponent(BorderLayout.SOUTH);
+                if (statusComponent instanceof JLabel label) {
+                    label.setText("Chat cleared.");
+                }
+            });
+            buttons.add(clearChat);
+            buttons.revalidate();
+            buttons.repaint();
+            clearButtonInstalled = true;
+        }
     }
 
     private static final class AutoClearingPromptArea extends JTextArea {
