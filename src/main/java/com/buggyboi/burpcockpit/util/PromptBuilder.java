@@ -6,10 +6,15 @@ import com.buggyboi.burpcockpit.state.TrafficSnapshot;
 import java.util.Objects;
 
 public final class PromptBuilder {
-    public static final int REQUEST_CONTEXT_LIMIT = 24000;
-    public static final int RESPONSE_CONTEXT_LIMIT = 12000;
-    public static final int NOTES_CONTEXT_LIMIT = 12000;
-    public static final int RAG_CONTEXT_LIMIT = 18000;
+    private static final int CHARS_PER_TOKEN = 4;
+    public static final int REQUEST_HEAD_TOKENS = 4000;
+    public static final int REQUEST_TAIL_TOKENS = 4000;
+    public static final int RESPONSE_HEAD_TOKENS = 4000;
+    public static final int RESPONSE_TAIL_TOKENS = 4000;
+    public static final int NOTES_HEAD_TOKENS = 2000;
+    public static final int NOTES_TAIL_TOKENS = 2000;
+    public static final int RAG_HEAD_TOKENS = 4000;
+    public static final int RAG_TAIL_TOKENS = 4000;
 
     private PromptBuilder() {}
 
@@ -19,8 +24,8 @@ public final class PromptBuilder {
                 + "Do not claim to have sent traffic. Do not invent endpoints, parameters, responses, or program rules. "
                 + "Prioritize concrete tests tied to visible method, path, host, headers, cookies, parameters, body values, status, and response metadata. "
                 + (thinkingEnabled
-                        ? "Reasoning mode is enabled. Think internally if useful, but keep the final answer terse and actionable. "
-                        : "Reasoning mode is disabled. Do not think step-by-step. Do not narrate reasoning. Start the final answer directly and keep it terse. ");
+                ? "Reasoning mode is enabled. Think internally if useful, but keep the final answer terse and actionable. "
+                : "Reasoning mode is disabled. Do not think step-by-step. Do not narrate reasoning. Start the final answer directly and keep it terse. ");
     }
 
     public static String analysisPrompt(CockpitState state, String userInstruction, String pinnedNote, String ragDump) {
@@ -60,7 +65,7 @@ public final class PromptBuilder {
         query.append(snapshot.hostLabel()).append(' ');
         String body = HttpText.body(snapshot.requestText());
         if (!body.isBlank()) {
-            query.append(limit(body, 1200)).append(' ');
+            query.append(headTail(body, 300, 300)).append(' ');
         }
         String instruction = Objects.toString(userInstruction, "").trim();
         if (!instruction.isBlank()) {
@@ -89,7 +94,7 @@ public final class PromptBuilder {
         prompt.append("Current target: ").append(HttpText.shortSummary(currentRequest, snapshot.service())).append("\n");
         if (state.settings().deltaOnly()) {
             prompt.append("Request delta from last prompt:\n````diff\n")
-                    .append(limit(DiffUtil.lineDiff(state.lastPromptRequest(), currentRequest, Integer.MAX_VALUE), 8000))
+                    .append(headTail(DiffUtil.lineDiff(state.lastPromptRequest(), currentRequest, Integer.MAX_VALUE), 1000, 1000))
                     .append("\n````\n");
         }
         prompt.append("Current request:\n````http\n").append(requestContext(currentRequest)).append("\n````\n");
@@ -105,23 +110,36 @@ public final class PromptBuilder {
     }
 
     public static String requestContext(String value) {
-        return limit(value, REQUEST_CONTEXT_LIMIT);
+        return headTail(value, REQUEST_HEAD_TOKENS, REQUEST_TAIL_TOKENS);
     }
 
     public static String responseContext(String value) {
-        return limit(value, RESPONSE_CONTEXT_LIMIT);
+        return headTail(value, RESPONSE_HEAD_TOKENS, RESPONSE_TAIL_TOKENS);
     }
 
     public static String notesContext(String value) {
-        return limit(value, NOTES_CONTEXT_LIMIT);
+        return headTail(value, NOTES_HEAD_TOKENS, NOTES_TAIL_TOKENS);
     }
 
     public static String ragContext(String value) {
-        return limit(value, RAG_CONTEXT_LIMIT);
+        return headTail(value, RAG_HEAD_TOKENS, RAG_TAIL_TOKENS);
     }
 
     public static int estimatedTokens(String value) {
-        return Math.max(0, Objects.toString(value, "").length() / 4);
+        return Math.max(0, Objects.toString(value, "").length() / CHARS_PER_TOKEN);
+    }
+
+    public static String headTail(String value, int headTokens, int tailTokens) {
+        String text = Objects.toString(value, "");
+        int headChars = Math.max(0, headTokens * CHARS_PER_TOKEN);
+        int tailChars = Math.max(0, tailTokens * CHARS_PER_TOKEN);
+        int maxChars = headChars + tailChars;
+        if (text.length() <= maxChars) {
+            return text;
+        }
+        String head = text.substring(0, Math.min(headChars, text.length()));
+        String tail = text.substring(Math.max(0, text.length() - tailChars));
+        return head + "\n\n[... middle truncated from " + text.length() + " chars; kept first ~" + headTokens + " tokens and last ~" + tailTokens + " tokens ...]\n\n" + tail;
     }
 
     public static String limit(String value, int maxChars) {
