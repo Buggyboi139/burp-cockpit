@@ -15,6 +15,7 @@ import java.nio.charset.StandardCharsets;
 import java.time.Duration;
 import java.util.Objects;
 import java.util.function.Consumer;
+import java.util.regex.Pattern;
 
 public final class LumaraClient {
     private final HttpClient client;
@@ -86,6 +87,7 @@ public final class LumaraClient {
 
         boolean gotAnyStreamToken = false;
         StringBuilder nonSseBody = new StringBuilder();
+        ThinkStripper stripper = new ThinkStripper();
         try (BufferedReader reader = new BufferedReader(new InputStreamReader(response.body(), StandardCharsets.UTF_8))) {
             String line;
             while ((line = reader.readLine()) != null) {
@@ -97,7 +99,7 @@ public final class LumaraClient {
                     if (data.equals("[DONE]")) {
                         break;
                     }
-                    String content = extractContent(data);
+                    String content = stripper.filter(extractContent(data));
                     if (!content.isEmpty()) {
                         gotAnyStreamToken = true;
                         onContent.accept(content);
@@ -111,8 +113,8 @@ public final class LumaraClient {
         if (!gotAnyStreamToken && !nonSseBody.isEmpty()) {
             String fallback = nonSseBody.toString();
             throwIfBurpProxyError(fallback);
-            String content = extractContent(fallback);
-            onContent.accept(content.isBlank() ? fallback : content);
+            String content = stripThinkBlocks(extractContent(fallback));
+            onContent.accept(content.isBlank() ? stripThinkBlocks(fallback) : content);
         }
     }
 
@@ -144,15 +146,19 @@ public final class LumaraClient {
 
     private static String chatBody(CockpitSettings settings, String systemPrompt, String userPrompt, boolean stream) {
         int maxTokens = Math.max(256, settings.tokenBudget());
+        boolean thinking = settings.includeThinking();
+        String system = (thinking ? "/think\n" : "/no_think\n") + systemPrompt;
+        String user = (thinking ? "/think\n" : "/no_think\n") + userPrompt;
         return "{"
                 + "\"model\":" + JsonUtil.quote(settings.model()) + ","
                 + "\"temperature\":0.2,"
                 + "\"top_p\":0.85,"
                 + "\"max_tokens\":" + maxTokens + ","
                 + "\"stream\":" + stream + ","
+                + "\"chat_template_kwargs\":{\"enable_thinking\":" + thinking + "},"
                 + "\"messages\":["
-                + "{\"role\":\"system\",\"content\":" + JsonUtil.quote(systemPrompt) + "},"
-                + "{\"role\":\"user\",\"content\":" + JsonUtil.quote(userPrompt) + "}"
+                + "{\"role\":\"system\",\"content\":" + JsonUtil.quote(system) + "},"
+                + "{\"role\":\"user\",\"content\":" + JsonUtil.quote(user) + "}"
                 + "]}"
                 ;
     }
@@ -169,6 +175,69 @@ public final class LumaraClient {
         String body = Objects.toString(responseBody, "");
         if (body.contains("Burp Suite") && body.contains("Invalid client request received")) {
             throw new IOException("Lumara endpoint is pointing at Burp's proxy listener. In the Kali VM use http://10.0.2.2:8080/v1/chat/completions, or move Burp/listeners off that port. The extension forces HTTP/1.1 and bypasses JVM proxy settings.");
+        }
+    }
+
+    private static final Pattern THINK_BLOCK = Pattern.compile("(?is)<think>.*?</think>");
+
+    private static String stripThinkBlocks(String value) {
+        return THINK_BLOCK.matcher(Objects.toString(value, "")).replaceAll("");
+    }
+
+    private static final class ThinkStripper {
+        private boolean insideThink;
+        private String carry = "";
+
+        String filter(String token) {
+            String input = carry + Objects.toString(token, "");
+            carry = "";
+            StringBuilder out = new StringBuilder();
+            int i = 0;
+            while (i < input.length()) {
+                String lower = input.substring(i).toLowerCase();
+                if (insideThink) {
+                    int end = lower.indexOf("</think>");
+                    if (end < 0) {
+                        carry = tailPossibleTag(input.substring(Math.max(i, input.length() - 16)));
+                        return out.toString();
+                    }
+                    i += end + "</think>".length();
+                    insideThink = false;
+                } else {
+                    int start = lower.indexOf("<think>");
+                    if (start < 0) {
+                        String safe = input.substring(i);
+                        String possible = tailPossibleTag(safe);
+                        if (!possible.isEmpty()) {
+                            out.append(safe, 0, safe.length() - possible.length());
+                            carry = possible;
+                        } else {
+                            out.append(safe);
+                        }
+                        return out.toString();
+                    }
+                    out.append(input, i, i + start);
+                    i += start + "<think>".length();
+                    insideThink = true;
+                }
+            }
+            return out.toString();
+        }
+
+        private static String tailPossibleTag(String value) {
+            String text = Objects.toString(value, "");
+            int start = Math.max(0, text.length() - 16);
+            String tail = text.substring(start);
+            String lower = tail.toLowerCase();
+            String[] tags = {"<think>", "</think>"};
+            for (String tag : tags) {
+                for (int len = Math.min(tag.length() - 1, lower.length()); len > 0; len--) {
+                    if (tag.startsWith(lower.substring(lower.length() - len))) {
+                        return tail.substring(tail.length() - len);
+                    }
+                }
+            }
+            return "";
         }
     }
 }
