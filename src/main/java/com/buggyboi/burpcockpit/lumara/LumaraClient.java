@@ -31,10 +31,9 @@ public final class LumaraClient {
             CockpitSettings settings,
             String systemPrompt,
             String userPrompt,
-            Consumer<String> onThinking,
             Consumer<String> onContent)
             throws IOException, InterruptedException {
-        streamChatInternal(settings, systemPrompt, userPrompt, onThinking, onContent);
+        streamChatInternal(settings, systemPrompt, userPrompt, onContent);
     }
 
     public String ragSearch(CockpitSettings settings, String query, int limit, String scope) throws IOException, InterruptedException {
@@ -67,7 +66,6 @@ public final class LumaraClient {
             CockpitSettings settings,
             String systemPrompt,
             String userPrompt,
-            Consumer<String> onThinking,
             Consumer<String> onContent)
             throws IOException, InterruptedException {
         String body = chatBody(settings, systemPrompt, userPrompt, true);
@@ -99,14 +97,10 @@ public final class LumaraClient {
                     if (data.equals("[DONE]")) {
                         break;
                     }
-                    TokenParts parts = extractTokenParts(data, settings.includeThinking());
-                    if (!parts.thinking().isEmpty()) {
+                    String content = extractContent(data);
+                    if (!content.isEmpty()) {
                         gotAnyStreamToken = true;
-                        onThinking.accept(parts.thinking());
-                    }
-                    if (!parts.content().isEmpty()) {
-                        gotAnyStreamToken = true;
-                        onContent.accept(parts.content());
+                        onContent.accept(content);
                     }
                 } else if (!line.isBlank()) {
                     nonSseBody.append(line).append('\n');
@@ -117,16 +111,8 @@ public final class LumaraClient {
         if (!gotAnyStreamToken && !nonSseBody.isEmpty()) {
             String fallback = nonSseBody.toString();
             throwIfBurpProxyError(fallback);
-            TokenParts parts = extractTokenParts(fallback, settings.includeThinking());
-            if (!parts.thinking().isEmpty()) {
-                onThinking.accept(parts.thinking());
-            }
-            if (!parts.content().isEmpty()) {
-                onContent.accept(parts.content());
-            } else {
-                String content = JsonUtil.extractStringField(fallback, "content");
-                onContent.accept(content.isBlank() ? fallback : content);
-            }
+            String content = extractContent(fallback);
+            onContent.accept(content.isBlank() ? fallback : content);
         }
     }
 
@@ -136,18 +122,11 @@ public final class LumaraClient {
                 .timeout(Duration.ofMinutes(10));
     }
 
-    private static TokenParts extractTokenParts(String json, boolean includeThinking) {
-        String thinking = "";
-        if (includeThinking) {
-            thinking = firstNonBlank(
-                    JsonUtil.extractStringField(json, "reasoning_content"),
-                    JsonUtil.extractStringField(json, "reasoning"),
-                    JsonUtil.extractStringField(json, "thinking"));
-        }
-        String content = firstNonBlank(
+    private static String extractContent(String json) {
+        return firstNonBlank(
                 JsonUtil.extractStringField(json, "content"),
-                JsonUtil.extractStringField(json, "text"));
-        return new TokenParts(thinking, content);
+                JsonUtil.extractStringField(json, "text"),
+                JsonUtil.extractStringField(json, "response"));
     }
 
     private static String firstNonBlank(String... values) {
@@ -192,6 +171,4 @@ public final class LumaraClient {
             throw new IOException("Lumara endpoint is pointing at Burp's proxy listener. In the Kali VM use http://10.0.2.2:8080/v1/chat/completions, or move Burp/listeners off that port. The extension forces HTTP/1.1 and bypasses JVM proxy settings.");
         }
     }
-
-    private record TokenParts(String thinking, String content) {}
 }
