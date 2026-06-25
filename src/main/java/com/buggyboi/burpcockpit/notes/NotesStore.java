@@ -2,6 +2,7 @@ package com.buggyboi.burpcockpit.notes;
 
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
+import java.nio.file.AtomicMoveNotSupportedException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.StandardCopyOption;
@@ -43,6 +44,11 @@ public final class NotesStore {
         return out;
     }
 
+    public synchronized boolean exists(String requestedName) {
+        ensureRoot();
+        return Files.exists(pathFor(requestedName));
+    }
+
     public synchronized String read(String requestedName) {
         ensureRoot();
         Path path = pathFor(requestedName);
@@ -76,7 +82,11 @@ public final class NotesStore {
         if (Files.exists(newPath)) {
             throw new IOException("Note already exists: " + newName);
         }
-        Files.move(oldPath, newPath, StandardCopyOption.ATOMIC_MOVE);
+        try {
+            Files.move(oldPath, newPath, StandardCopyOption.ATOMIC_MOVE);
+        } catch (AtomicMoveNotSupportedException ex) {
+            Files.move(oldPath, newPath);
+        }
         return newName;
     }
 
