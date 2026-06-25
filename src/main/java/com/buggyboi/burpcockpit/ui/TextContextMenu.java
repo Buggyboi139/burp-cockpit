@@ -118,7 +118,7 @@ public final class TextContextMenu {
             setContentType("text/html");
             setEditable(false);
             putClientProperty(JEditorPane.HONOR_DISPLAY_PROPERTIES, Boolean.TRUE);
-            setPreferredScrollableViewportSize(new Dimension(cols * 8, rows * 18));
+            setPreferredSize(new Dimension(cols * 8, rows * 18));
             render();
         }
 
