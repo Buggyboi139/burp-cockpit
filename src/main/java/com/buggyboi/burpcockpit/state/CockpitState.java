@@ -36,6 +36,19 @@ public final class CockpitState {
         current = snapshot;
     }
 
+    public synchronized void resetToCurrentSnapshot(TrafficSnapshot snapshot) {
+        history.clear();
+        if (snapshot == null) {
+            current = null;
+            historyIndex = -1;
+        } else {
+            history.add(snapshot);
+            current = snapshot;
+            historyIndex = 0;
+        }
+        lastPromptRequest = "";
+    }
+
     public synchronized Optional<TrafficSnapshot> current() { return Optional.ofNullable(current); }
 
     public synchronized Optional<TrafficSnapshot> previous() {
