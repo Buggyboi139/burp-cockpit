@@ -22,6 +22,8 @@ public final class PromptBuilder {
                 + "Assume authorized manual web security research. Use only supplied request/response evidence, notes, and RAG context. "
                 + "Do not claim to have sent traffic. Do not invent endpoints, parameters, responses, or program rules. "
                 + "Prioritize concrete tests tied to visible method, path, host, headers, cookies, parameters, body values, status, and response metadata. "
+                + "Format all final answers as plain text, not Markdown. Use short headings on their own lines and dash bullets on their own lines. "
+                + "Do not use bold, italics, tables, or giant paragraphs. Keep each bullet to one idea. "
                 + (thinkingEnabled
                 ? "Reasoning mode is enabled. Think internally if useful, but keep the final answer terse and actionable. "
                 : "Reasoning mode is disabled. Do not think step-by-step. Do not narrate reasoning. Start the final answer directly and keep it terse. ");
@@ -30,21 +32,28 @@ public final class PromptBuilder {
     public static String analysisPrompt(CockpitState state, String userInstruction, String pinnedNote, String ragDump) {
         StringBuilder prompt = new StringBuilder();
         appendThinkingControl(prompt, state.settings().includeThinking());
+        appendLayoutRules(prompt);
         prompt.append("Analyze this single captured HTTP exchange for high-value manual bug bounty tests.\n\n");
         appendContext(prompt, state, pinnedNote, ragDump);
         prompt.append("\nUser instruction:\n").append(blankDefault(userInstruction, "Analyze this exchange."));
-        prompt.append("\n\nOutput format:\n");
-        prompt.append("1. What matters in this exchange\n");
-        prompt.append("2. Highest-value bug angles\n");
-        prompt.append("3. Exact parameters/headers/body fields to mutate\n");
-        prompt.append("4. Expected response signals\n");
-        prompt.append("5. Low-value tests to skip\n");
+        prompt.append("\n\nOutput format, plain text only:\n");
+        prompt.append("What matters\n");
+        prompt.append("- one concise observation per line\n\n");
+        prompt.append("Highest-value angles\n");
+        prompt.append("- one concise test angle per line\n\n");
+        prompt.append("Exact fields\n");
+        prompt.append("- one parameter, header, cookie, or body field per line\n\n");
+        prompt.append("Response signals\n");
+        prompt.append("- one expected signal per line\n\n");
+        prompt.append("Skip\n");
+        prompt.append("- one low-value item per line\n");
         return prompt.toString();
     }
 
     public static String chatPrompt(CockpitState state, String userInstruction, String pinnedNote, String ragDump) {
         StringBuilder prompt = new StringBuilder();
         appendThinkingControl(prompt, state.settings().includeThinking());
+        appendLayoutRules(prompt);
         prompt.append("Answer as a security teammate using the current Burp context.\n\n");
         appendContext(prompt, state, pinnedNote, ragDump);
         prompt.append("\nUser message:\n").append(blankDefault(userInstruction, "What should I test next?"));
@@ -81,6 +90,13 @@ public final class PromptBuilder {
             prompt.append("/no_think\n");
             prompt.append("Reasoning mode is disabled. Do not think step-by-step. Do not print reasoning. Answer directly.\n\n");
         }
+    }
+
+    private static void appendLayoutRules(StringBuilder prompt) {
+        prompt.append("Final answer layout rules:\n");
+        prompt.append("Use plain text only. No Markdown emphasis. No tables. No giant paragraphs.\n");
+        prompt.append("Put every heading on its own line. Put every bullet on its own line using '- '.\n");
+        prompt.append("Leave a blank line between sections. Keep each bullet short and operational.\n\n");
     }
 
     private static void appendContext(StringBuilder prompt, CockpitState state, String pinnedNote, String ragDump) {
