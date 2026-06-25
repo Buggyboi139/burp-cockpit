@@ -87,6 +87,7 @@ public final class CockpitPanel extends JPanel {
     private Timer busyTimer;
     private int busyTick;
     private boolean suppressNoteEvents;
+    private String activeNoteName = "";
 
     public CockpitPanel(MontoyaApi api, CockpitState state, LumaraClient lumaraClient) {
         super(new BorderLayout());
@@ -534,7 +535,7 @@ public final class CockpitPanel extends JPanel {
         if (!text.isBlank()) {
             return text;
         }
-        String name = currentNoteName();
+        String name = activeNoteName.isBlank() ? currentNoteName() : activeNoteName;
         return name.isBlank() ? "" : notesStore.read(name);
     }
 
@@ -547,7 +548,7 @@ public final class CockpitPanel extends JPanel {
     }
 
     private void refreshNoteList() {
-        String selected = currentNoteName();
+        String selected = activeNoteName.isBlank() ? currentNoteName() : activeNoteName;
         suppressNoteEvents = true;
         noteSelector.removeAllItems();
         List<String> names = notesStore.listNoteNames();
@@ -570,6 +571,7 @@ public final class CockpitPanel extends JPanel {
         notesStore.ensureNote(name);
         refreshNoteList();
         selectNote(name);
+        activeNoteName = name;
         notesArea.setText(notesStore.read(name));
         notesArea.setCaretPosition(0);
         state.pinnedNoteName(name);
@@ -606,6 +608,7 @@ public final class CockpitPanel extends JPanel {
         notesStore.ensureNote(name);
         refreshNoteList();
         selectNote(name);
+        activeNoteName = name;
         notesArea.setText(notesStore.read(name));
         notesArea.setCaretPosition(0);
         state.pinnedNoteName(name);
@@ -624,6 +627,7 @@ public final class CockpitPanel extends JPanel {
         }
         notesStore.ensureNote(name);
         selectNote(name);
+        activeNoteName = name;
         notesArea.setText(notesStore.read(name));
         notesArea.setCaretPosition(0);
         state.pinnedNoteName(name);
@@ -634,10 +638,11 @@ public final class CockpitPanel extends JPanel {
     private void saveSelectedNote() {
         String name = currentNoteName();
         if (name.isBlank()) {
-            name = "DEFAULT";
+            name = activeNoteName.isBlank() ? "DEFAULT" : activeNoteName;
         }
         try {
             notesStore.write(name, notesArea.getText());
+            activeNoteName = name;
             refreshNoteList();
             selectNote(name);
             state.pinnedNoteName(name);
@@ -649,12 +654,16 @@ public final class CockpitPanel extends JPanel {
     }
 
     private void quietSaveActiveNote() {
-        String name = currentNoteName();
+        String name = activeNoteName;
+        if (name.isBlank()) {
+            name = currentNoteName();
+        }
         if (name.isBlank()) {
             return;
         }
         try {
             notesStore.write(name, notesArea.getText());
+            activeNoteName = name;
             state.pinnedNoteName(name);
         } catch (Throwable throwable) {
             api.logging().logToError("Burp Cockpit failed to auto-save note", throwable);
