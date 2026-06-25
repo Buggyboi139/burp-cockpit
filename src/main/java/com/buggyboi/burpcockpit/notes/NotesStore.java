@@ -4,6 +4,7 @@ import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.nio.file.StandardCopyOption;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.Comparator;
@@ -58,6 +59,25 @@ public final class NotesStore {
     public synchronized void write(String requestedName, String content) throws IOException {
         ensureRoot();
         Files.writeString(pathFor(requestedName), Objects.toString(content, ""), StandardCharsets.UTF_8);
+    }
+
+    public synchronized String rename(String oldRequestedName, String newRequestedName) throws IOException {
+        ensureRoot();
+        String oldName = sanitizeName(oldRequestedName);
+        String newName = sanitizeName(newRequestedName);
+        if (oldName.equals(newName)) {
+            return newName;
+        }
+        Path oldPath = pathFor(oldName);
+        Path newPath = pathFor(newName);
+        if (!Files.exists(oldPath)) {
+            throw new IOException("Cannot rename missing note: " + oldName);
+        }
+        if (Files.exists(newPath)) {
+            throw new IOException("Note already exists: " + newName);
+        }
+        Files.move(oldPath, newPath, StandardCopyOption.ATOMIC_MOVE);
+        return newName;
     }
 
     public synchronized String ensureNote(String requestedName) {
