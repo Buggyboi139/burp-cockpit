@@ -8,6 +8,7 @@ import javax.swing.JPanel;
 import javax.swing.JPopupMenu;
 import javax.swing.JTextArea;
 import javax.swing.JTextField;
+import javax.swing.JToolBar;
 import javax.swing.KeyStroke;
 import javax.swing.SwingUtilities;
 import javax.swing.text.JTextComponent;
@@ -17,6 +18,14 @@ import java.awt.Container;
 import java.awt.event.ActionEvent;
 import java.awt.event.MouseAdapter;
 import java.awt.event.MouseEvent;
+import java.lang.reflect.Field;
+import java.lang.reflect.Method;
+import java.net.URI;
+import java.util.ArrayList;
+import java.util.LinkedHashMap;
+import java.util.List;
+import java.util.Locale;
+import java.util.Map;
 import java.util.Objects;
 
 public final class TextContextMenu {
@@ -69,6 +78,8 @@ public final class TextContextMenu {
             area = new AutoClearingPromptArea(rows, cols);
         } else if (isChatTranscript(rows, cols, editable)) {
             area = new ChatTranscriptArea(rows, cols);
+        } else if (isRequestEditor(rows, cols, editable)) {
+            area = new RequestEditorArea(rows, cols);
         } else {
             area = new JTextArea(rows, cols);
         }
@@ -104,6 +115,337 @@ public final class TextContextMenu {
 
     private static boolean isChatTranscript(int rows, int cols, boolean editable) {
         return !editable && rows == 24 && cols == 70;
+    }
+
+    private static boolean isRequestEditor(int rows, int cols, boolean editable) {
+        return editable && rows == 24 && cols == 90;
+    }
+
+    private static final class RequestEditorArea extends JTextArea {
+        private static final String REFRESH_COOKIES_BUTTON_NAME = "burp-cockpit-refresh-cookies";
+        private boolean refreshButtonInstalled;
+
+        private RequestEditorArea(int rows, int cols) {
+            super(rows, cols);
+        }
+
+        @Override
+        public void addNotify() {
+            super.addNotify();
+            SwingUtilities.invokeLater(this::installRefreshCookiesButton);
+        }
+
+        private void installRefreshCookiesButton() {
+            if (refreshButtonInstalled) {
+                return;
+            }
+            Container root = rootContainer(this);
+            if (root == null) {
+                return;
+            }
+            JButton send = findButtonRecursive(root, "Send");
+            if (send == null || !(send.getParent() instanceof JToolBar toolbar)) {
+                return;
+            }
+            for (Component component : toolbar.getComponents()) {
+                if (REFRESH_COOKIES_BUTTON_NAME.equals(component.getName())) {
+                    refreshButtonInstalled = true;
+                    return;
+                }
+            }
+            JButton refreshCookies = new JButton("Refresh Cookies");
+            refreshCookies.setName(REFRESH_COOKIES_BUTTON_NAME);
+            refreshCookies.addActionListener(e -> refreshCookiesFromBurp());
+            int index = toolbar.getComponentIndex(send);
+            toolbar.add(refreshCookies, Math.max(0, index + 1));
+            toolbar.revalidate();
+            toolbar.repaint();
+            refreshButtonInstalled = true;
+        }
+
+        private void refreshCookiesFromBurp() {
+            try {
+                RequestTarget target = RequestTarget.from(getText());
+                if (target.host().isBlank()) {
+                    setCockpitStatus("Refresh Cookies failed: request has no Host header.");
+                    return;
+                }
+                Object cockpit = cockpitPanel(this);
+                Object api = fieldValue(cockpit, "api");
+                List<Object> cookies = readBurpCookies(api, target.url());
+                Map<String, String> matched = new LinkedHashMap<>();
+                for (Object cookie : cookies) {
+                    CookieView view = CookieView.from(cookie);
+                    if (view.matches(target)) {
+                        matched.put(view.name(), view.value());
+                    }
+                }
+                if (matched.isEmpty()) {
+                    setCockpitStatus("Refresh Cookies found no matching Burp cookie jar cookies for " + target.host() + target.path() + ".");
+                    return;
+                }
+                StringBuilder cookieHeader = new StringBuilder();
+                for (Map.Entry<String, String> entry : matched.entrySet()) {
+                    if (!cookieHeader.isEmpty()) {
+                        cookieHeader.append("; ");
+                    }
+                    cookieHeader.append(entry.getKey()).append('=').append(entry.getValue());
+                }
+                setText(withCookieHeader(getText(), cookieHeader.toString()));
+                setCaretPosition(0);
+                setCockpitStatus("Refreshed " + matched.size() + " cookie(s) from Burp cookie jar for " + target.host() + ".");
+            } catch (Throwable throwable) {
+                setCockpitStatus("Refresh Cookies failed: " + throwable.getClass().getSimpleName() + ": " + Objects.toString(throwable.getMessage(), "no detail"));
+            }
+        }
+
+        private void setCockpitStatus(String message) {
+            Object cockpit = cockpitPanel(this);
+            Object label = fieldValue(cockpit, "statusLabel");
+            if (label instanceof JLabel jLabel) {
+                jLabel.setText(message);
+            }
+        }
+
+        private static List<Object> readBurpCookies(Object api, String url) throws Exception {
+            Object http = invokeNoArg(api, "http");
+            Object jar = invokeNoArg(http, "cookieJar");
+            Object result = null;
+            for (String method : List.of("cookies", "getCookies")) {
+                result = tryInvokeNoArg(jar, method);
+                if (result != null) {
+                    break;
+                }
+                result = tryInvokeOneString(jar, method, url);
+                if (result != null) {
+                    break;
+                }
+            }
+            if (result == null) {
+                throw new IllegalStateException("Montoya cookie jar did not expose cookies()/getCookies().");
+            }
+            if (result instanceof Iterable<?> iterable) {
+                List<Object> out = new ArrayList<>();
+                for (Object item : iterable) {
+                    out.add(item);
+                }
+                return out;
+            }
+            if (result.getClass().isArray()) {
+                List<Object> out = new ArrayList<>();
+                int len = java.lang.reflect.Array.getLength(result);
+                for (int i = 0; i < len; i++) {
+                    out.add(java.lang.reflect.Array.get(result, i));
+                }
+                return out;
+            }
+            throw new IllegalStateException("Montoya cookie jar returned unsupported type: " + result.getClass().getName());
+        }
+
+        private static Object cockpitPanel(Component start) {
+            Component current = start;
+            while (current != null) {
+                if ("com.buggyboi.burpcockpit.ui.CockpitPanel".equals(current.getClass().getName())) {
+                    return current;
+                }
+                current = current.getParent();
+            }
+            throw new IllegalStateException("Could not find CockpitPanel root.");
+        }
+
+        private static Object fieldValue(Object target, String fieldName) {
+            if (target == null) {
+                return null;
+            }
+            Class<?> type = target.getClass();
+            while (type != null) {
+                try {
+                    Field field = type.getDeclaredField(fieldName);
+                    field.setAccessible(true);
+                    return field.get(target);
+                } catch (NoSuchFieldException ignored) {
+                    type = type.getSuperclass();
+                } catch (Throwable throwable) {
+                    return null;
+                }
+            }
+            return null;
+        }
+
+        private static Object invokeNoArg(Object target, String name) throws Exception {
+            Method method = target.getClass().getMethod(name);
+            method.setAccessible(true);
+            return method.invoke(target);
+        }
+
+        private static Object tryInvokeNoArg(Object target, String name) {
+            try {
+                return invokeNoArg(target, name);
+            } catch (Throwable ignored) {
+                return null;
+            }
+        }
+
+        private static Object tryInvokeOneString(Object target, String name, String arg) {
+            for (Method method : target.getClass().getMethods()) {
+                if (!method.getName().equals(name) || method.getParameterCount() != 1 || !method.getParameterTypes()[0].equals(String.class)) {
+                    continue;
+                }
+                try {
+                    method.setAccessible(true);
+                    return method.invoke(target, arg);
+                } catch (Throwable ignored) {
+                    return null;
+                }
+            }
+            return null;
+        }
+
+        private static String withCookieHeader(String rawRequest, String cookieHeader) {
+            String raw = Objects.toString(rawRequest, "");
+            String newline = raw.contains("\r\n") ? "\r\n" : "\n";
+            String normalized = raw.replace("\r\n", "\n").replace('\r', '\n');
+            int split = normalized.indexOf("\n\n");
+            String headers = split >= 0 ? normalized.substring(0, split) : normalized;
+            String body = split >= 0 ? normalized.substring(split + 2) : "";
+            String[] lines = headers.split("\n", -1);
+            List<String> out = new ArrayList<>();
+            boolean replaced = false;
+            boolean inserted = false;
+            for (int i = 0; i < lines.length; i++) {
+                String line = lines[i];
+                if (line.toLowerCase(Locale.ROOT).startsWith("cookie:")) {
+                    if (!replaced) {
+                        out.add("Cookie: " + cookieHeader);
+                        replaced = true;
+                    }
+                    continue;
+                }
+                out.add(line);
+                if (!replaced && !inserted && i > 0 && line.toLowerCase(Locale.ROOT).startsWith("host:")) {
+                    out.add("Cookie: " + cookieHeader);
+                    inserted = true;
+                }
+            }
+            if (!replaced && !inserted) {
+                int insertAt = Math.min(1, out.size());
+                out.add(insertAt, "Cookie: " + cookieHeader);
+            }
+            return String.join(newline, out) + newline + newline + body.replace("\n", newline);
+        }
+
+        private record RequestTarget(String scheme, String host, String path) {
+            String url() {
+                return scheme + "://" + host + path;
+            }
+
+            static RequestTarget from(String rawRequest) {
+                String text = Objects.toString(rawRequest, "").replace("\r\n", "\n").replace('\r', '\n');
+                String[] lines = text.split("\n");
+                String first = lines.length > 0 ? lines[0] : "";
+                String host = "";
+                String path = "/";
+                String scheme = "https";
+                for (String line : lines) {
+                    String lower = line.toLowerCase(Locale.ROOT);
+                    if (lower.startsWith("host:")) {
+                        host = line.substring(line.indexOf(':') + 1).trim();
+                    } else if (lower.startsWith("origin: http://")) {
+                        scheme = "http";
+                    } else if (lower.startsWith("referer: http://")) {
+                        scheme = "http";
+                    }
+                }
+                String[] parts = first.split("\\s+");
+                if (parts.length > 1) {
+                    path = parts[1].trim();
+                    if (path.startsWith("http://") || path.startsWith("https://")) {
+                        try {
+                            URI uri = URI.create(path);
+                            scheme = uri.getScheme() == null ? scheme : uri.getScheme();
+                            host = uri.getHost() == null ? host : uri.getHost();
+                            if (uri.getPort() > 0) {
+                                host = host + ":" + uri.getPort();
+                            }
+                            path = uri.getRawPath() == null || uri.getRawPath().isBlank() ? "/" : uri.getRawPath();
+                            if (uri.getRawQuery() != null) {
+                                path += "?" + uri.getRawQuery();
+                            }
+                        } catch (Throwable ignored) {
+                            path = "/";
+                        }
+                    }
+                }
+                if (path.isBlank()) {
+                    path = "/";
+                }
+                return new RequestTarget(scheme, host, path);
+            }
+        }
+
+        private record CookieView(String name, String value, String domain, String path, boolean secure) {
+            boolean matches(RequestTarget target) {
+                if (name.isBlank()) {
+                    return false;
+                }
+                String targetHost = stripPort(target.host()).toLowerCase(Locale.ROOT);
+                String cookieDomain = domain.toLowerCase(Locale.ROOT);
+                if (cookieDomain.startsWith(".")) {
+                    cookieDomain = cookieDomain.substring(1);
+                }
+                boolean domainOk = cookieDomain.isBlank()
+                        || targetHost.equals(cookieDomain)
+                        || targetHost.endsWith("." + cookieDomain);
+                boolean pathOk = path.isBlank() || target.path().startsWith(path);
+                boolean secureOk = !secure || "https".equalsIgnoreCase(target.scheme());
+                return domainOk && pathOk && secureOk;
+            }
+
+            static CookieView from(Object cookie) {
+                String name = str(cookie, "name", "getName");
+                String value = str(cookie, "value", "getValue");
+                String domain = str(cookie, "domain", "getDomain");
+                String path = str(cookie, "path", "getPath");
+                boolean secure = bool(cookie, "secure", "isSecure", "getSecure");
+                return new CookieView(name, value, domain, path, secure);
+            }
+
+            private static String stripPort(String host) {
+                String value = Objects.toString(host, "").trim();
+                int colon = value.lastIndexOf(':');
+                if (colon > 0 && value.indexOf(']') < colon) {
+                    return value.substring(0, colon);
+                }
+                return value;
+            }
+
+            private static String str(Object target, String... names) {
+                for (String name : names) {
+                    try {
+                        Object value = invokeNoArg(target, name);
+                        return Objects.toString(value, "");
+                    } catch (Throwable ignored) {
+                        // Try next name. Ceremony, because Java.
+                    }
+                }
+                return "";
+            }
+
+            private static boolean bool(Object target, String... names) {
+                for (String name : names) {
+                    try {
+                        Object value = invokeNoArg(target, name);
+                        if (value instanceof Boolean b) {
+                            return b;
+                        }
+                        return Boolean.parseBoolean(Objects.toString(value, "false"));
+                    } catch (Throwable ignored) {
+                        // Try next name.
+                    }
+                }
+                return false;
+            }
+        }
     }
 
     private static final class ChatTranscriptArea extends JTextArea {
@@ -464,31 +806,36 @@ public final class TextContextMenu {
                 }
             });
         }
+    }
 
-        private static JButton findButton(Component start, String text) {
-            Container root = start.getParent();
-            while (root != null && root.getParent() != null) {
-                root = root.getParent();
-            }
-            if (root == null) {
-                return null;
-            }
-            return findButtonRecursive(root, text);
+    private static Container rootContainer(Component start) {
+        Container root = start.getParent();
+        while (root != null && root.getParent() != null) {
+            root = root.getParent();
         }
+        return root;
+    }
 
-        private static JButton findButtonRecursive(Component component, String text) {
-            if (component instanceof JButton button && text.equals(button.getText())) {
-                return button;
-            }
-            if (component instanceof Container container) {
-                for (Component child : container.getComponents()) {
-                    JButton found = findButtonRecursive(child, text);
-                    if (found != null) {
-                        return found;
-                    }
-                }
-            }
+    private static JButton findButton(Component start, String text) {
+        Container root = rootContainer(start);
+        if (root == null) {
             return null;
         }
+        return findButtonRecursive(root, text);
+    }
+
+    private static JButton findButtonRecursive(Component component, String text) {
+        if (component instanceof JButton button && text.equals(button.getText())) {
+            return button;
+        }
+        if (component instanceof Container container) {
+            for (Component child : container.getComponents()) {
+                JButton found = findButtonRecursive(child, text);
+                if (found != null) {
+                    return found;
+                }
+            }
+        }
+        return null;
     }
 }
