@@ -2,14 +2,12 @@ plugins {
     id 'java'
 }
 
+repositories {
+    mavenCentral()
+}
+
 group = 'com.buggyboi'
 version = '0.1.0'
-
-java {
-    toolchain {
-        languageVersion = JavaLanguageVersion.of(17)
-    }
-}
 
 dependencies {
     compileOnly 'net.portswigger.burp.extensions:montoya-api:2026.4'
