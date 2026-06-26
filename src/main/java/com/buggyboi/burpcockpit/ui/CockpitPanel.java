@@ -709,16 +709,22 @@ public final class CockpitPanel extends JPanel {
             @Override public void changedUpdate(DocumentEvent e) { refreshPreview.run(); }
         });
 
-        JPanel buttons = new JPanel(new FlowLayout(FlowLayout.RIGHT, 8, 0));
         JCheckBox wrapText = new JCheckBox("Wrap text", true);
         wrapText.setToolTipText("Wrap long decoded and encoded values in the Auto Decode view.");
         wrapText.addActionListener(e -> setTextWrap(wrappedAreas, wrapText.isSelected()));
         setTextWrap(wrappedAreas, wrapText.isSelected());
+
+        JPanel top = new JPanel(new BorderLayout(6, 4));
+        top.add(chainPathArea, BorderLayout.CENTER);
+        JPanel wrapControls = new JPanel(new FlowLayout(FlowLayout.LEFT, 0, 0));
+        wrapControls.add(wrapText);
+        top.add(wrapControls, BorderLayout.SOUTH);
+
+        JPanel buttons = new JPanel(new FlowLayout(FlowLayout.RIGHT, 8, 0));
         JButton apply = toolbarButton("Apply", "Replace only the original request selection.");
         JButton copyDecoded = toolbarButton("Copy decoded", "Copy the decoded editable text.");
         JButton sendToDecoder = toolbarButton("Send original to Burp Decoder", "Open the original selection in Burp Decoder.");
         JButton cancel = toolbarButton("Cancel", "Close without changing the request.");
-        buttons.add(wrapText);
         buttons.add(sendToDecoder);
         buttons.add(copyDecoded);
         buttons.add(cancel);
@@ -726,7 +732,7 @@ public final class CockpitPanel extends JPanel {
 
         JPanel content = new JPanel(new BorderLayout(6, 6));
         content.setBorder(BorderFactory.createEmptyBorder(8, 8, 8, 8));
-        content.add(chainPathArea, BorderLayout.NORTH);
+        content.add(top, BorderLayout.NORTH);
         content.add(fieldsScroll, BorderLayout.CENTER);
         content.add(buttons, BorderLayout.SOUTH);
 
