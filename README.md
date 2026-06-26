@@ -144,7 +144,7 @@ Manual request sending only happens when you click `Send`.
 
 ## Build
 
-Requires Java 21 and Gradle.
+Requires Java 17 or newer and Gradle.
 
 ```bash
 gradle clean jar

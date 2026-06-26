@@ -7,7 +7,7 @@ version = '0.1.0'
 
 java {
     toolchain {
-        languageVersion = JavaLanguageVersion.of(21)
+        languageVersion = JavaLanguageVersion.of(17)
     }
 }
 
@@ -18,7 +18,7 @@ dependencies {
 
 compileJava {
     options.encoding = 'UTF-8'
-    options.release = 21
+    options.release = 17
 }
 
 tasks.register('codecChainTest', JavaExec) {
@@ -27,7 +27,13 @@ tasks.register('codecChainTest', JavaExec) {
     mainClass = 'com.buggyboi.burpcockpit.util.CodecChainTest'
 }
 
-check.dependsOn tasks.named('codecChainTest')
+tasks.register('promptBuilderTest', JavaExec) {
+    dependsOn testClasses
+    classpath = sourceSets.test.runtimeClasspath
+    mainClass = 'com.buggyboi.burpcockpit.util.PromptBuilderTest'
+}
+
+check.dependsOn tasks.named('codecChainTest'), tasks.named('promptBuilderTest')
 
 jar {
     archiveBaseName = 'burp-cockpit'

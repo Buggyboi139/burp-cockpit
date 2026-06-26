@@ -308,7 +308,7 @@ public final class CockpitPanel extends JPanel {
         addToolbarGroup(bar, "View", toggleRight, settingsButton);
 
         JPanel context = toolbarSection("AI Context");
-        context.add(new JLabel("Tokens"));
+        context.add(new JLabel("Max output"));
         context.add(tokenSelector);
         context.add(thinkingCheck);
         context.add(deltaCheck);
@@ -850,6 +850,13 @@ public final class CockpitPanel extends JPanel {
                     try {
                         String query = PromptBuilder.ragQuery(state, userInstruction);
                         ragDump = lumaraClient.ragSearch(settings, query, 5, "both", promptSnapshot);
+                        String ragStatus = ragDump.isBlank()
+                                ? "RAG returned empty context; streaming without RAG."
+                                : "RAG loaded " + PromptBuilder.estimatedTokens(ragDump) + " token(s); streaming response...";
+                        TextContextMenu.later(() -> {
+                            setStatus(ragStatus);
+                            setChatStatus(ragStatus);
+                        });
                     } catch (Throwable throwable) {
                         String ragFailure = ragFailureMessage(settings.ragSearchEndpoint(), throwable);
                         api.logging().logToError(ragFailure, throwable);
@@ -864,15 +871,18 @@ public final class CockpitPanel extends JPanel {
                 TextContextMenu.later(() -> {
                     lastRagDump = finalRagDump;
                     updateContextCounter();
-                    setStatus("Streaming response...");
-                    setChatStatus("Streaming response...");
+                    String streamingStatus = finalRagDump.isBlank()
+                            ? "Streaming response..."
+                            : "Streaming response with RAG (" + PromptBuilder.estimatedTokens(finalRagDump) + " token(s))...";
+                    setStatus(streamingStatus);
+                    setChatStatus(streamingStatus);
                 });
 
                 String noteContext = notesCheck.isSelected() ? activeNoteContent() : "";
                 String prompt = analysis
                         ? PromptBuilder.analysisPrompt(state, promptSnapshot, userInstruction, noteContext, ragDump)
                         : PromptBuilder.chatPrompt(state, promptSnapshot, userInstruction, noteContext, ragDump);
-                String system = PromptBuilder.systemPrompt(settings.includeThinking(), analysis);
+                String system = PromptBuilder.systemPrompt(settings, settings.includeThinking(), analysis);
 
                 lumaraClient.streamChat(settings, system, prompt, contentToken -> TextContextMenu.later(() -> {
                     if (contentStarted.compareAndSet(false, true)) {
@@ -1141,30 +1151,158 @@ public final class CockpitPanel extends JPanel {
         gbc.insets = new Insets(4, 4, 4, 4);
         gbc.fill = GridBagConstraints.HORIZONTAL;
         gbc.weightx = 1;
+        JTextArea chatSystemPromptArea = settingsArea(PromptBuilder.effectiveChatSystemPrompt(settings), 5);
+        JTextArea analyzeSystemPromptArea = settingsArea(PromptBuilder.effectiveAnalyzeSystemPrompt(settings), 5);
+        JTextField analyzeRequestHead = intField(settings.analyzeRequestHeadTokens());
+        JTextField analyzeRequestTail = intField(settings.analyzeRequestTailTokens());
+        JTextField analyzeResponseHead = intField(settings.analyzeResponseHeadTokens());
+        JTextField analyzeResponseTail = intField(settings.analyzeResponseTailTokens());
+        JTextField analyzeNotes = intField(settings.analyzeNotesTokens());
+        JTextField analyzeRagHead = intField(settings.analyzeRagHeadTokens());
+        JTextField analyzeRagTail = intField(settings.analyzeRagTailTokens());
+        JTextField chatRequestHead = intField(settings.chatRequestHeadTokens());
+        JTextField chatRequestTail = intField(settings.chatRequestTailTokens());
+        JTextField chatResponseHead = intField(settings.chatResponseHeadTokens());
+        JTextField chatResponseTail = intField(settings.chatResponseTailTokens());
+        JTextField chatResponseExcerpt = intField(settings.chatResponseExcerptChars());
+        JTextField chatNotes = intField(settings.chatNotesTokens());
+        JTextField chatRag = intField(settings.chatRagTokens());
+        JTextField deltaHead = intField(settings.deltaHeadTokens());
+        JTextField deltaTail = intField(settings.deltaTailTokens());
         int row = 0;
+        row = addSettingSection(panel, gbc, row, "Connection");
         row = addSettingRow(panel, gbc, row, "Chat endpoint", chatEndpointField);
         row = addSettingRow(panel, gbc, row, "Model", modelField);
         row = addSettingRow(panel, gbc, row, "RAG search endpoint", ragEndpointField);
         row = addSettingRow(panel, gbc, row, "RAG API key", ragApiKeyField);
         row = addSettingRow(panel, gbc, row, "Notes directory", notesDirField);
-        int choice = JOptionPane.showConfirmDialog(this, panel, "Burp Cockpit Settings", JOptionPane.OK_CANCEL_OPTION, JOptionPane.PLAIN_MESSAGE);
+        row = addSettingSection(panel, gbc, row, "System prompts");
+        row = addSettingAreaRow(panel, gbc, row, "Chat system prompt", chatSystemPromptArea);
+        row = addSettingAreaRow(panel, gbc, row, "Analyze system prompt", analyzeSystemPromptArea);
+        row = addSettingSection(panel, gbc, row, "Analyze caps (tokens)");
+        row = addSettingRow(panel, gbc, row, "Request head", analyzeRequestHead);
+        row = addSettingRow(panel, gbc, row, "Request tail", analyzeRequestTail);
+        row = addSettingRow(panel, gbc, row, "Response head", analyzeResponseHead);
+        row = addSettingRow(panel, gbc, row, "Response tail", analyzeResponseTail);
+        row = addSettingRow(panel, gbc, row, "Notes", analyzeNotes);
+        row = addSettingRow(panel, gbc, row, "RAG head", analyzeRagHead);
+        row = addSettingRow(panel, gbc, row, "RAG tail", analyzeRagTail);
+        row = addSettingSection(panel, gbc, row, "Chat caps");
+        row = addSettingRow(panel, gbc, row, "Request head tokens", chatRequestHead);
+        row = addSettingRow(panel, gbc, row, "Request tail tokens", chatRequestTail);
+        row = addSettingRow(panel, gbc, row, "Response head tokens", chatResponseHead);
+        row = addSettingRow(panel, gbc, row, "Response tail tokens", chatResponseTail);
+        row = addSettingRow(panel, gbc, row, "Response excerpt chars", chatResponseExcerpt);
+        row = addSettingRow(panel, gbc, row, "Notes tokens", chatNotes);
+        row = addSettingRow(panel, gbc, row, "RAG tokens", chatRag);
+        row = addSettingSection(panel, gbc, row, "Delta caps (tokens)");
+        row = addSettingRow(panel, gbc, row, "Delta head", deltaHead);
+        row = addSettingRow(panel, gbc, row, "Delta tail", deltaTail);
+        JScrollPane scroll = new JScrollPane(panel);
+        scroll.setPreferredSize(new Dimension(760, 680));
+        int choice = JOptionPane.showConfirmDialog(this, scroll, "Burp Cockpit Settings", JOptionPane.OK_CANCEL_OPTION, JOptionPane.PLAIN_MESSAGE);
         if (choice == JOptionPane.OK_OPTION) {
             syncSettingsFromControls();
+            saveSystemPrompt(chatSystemPromptArea, PromptBuilder.defaultChatSystemPrompt(), true);
+            saveSystemPrompt(analyzeSystemPromptArea, PromptBuilder.defaultAnalyzeSystemPrompt(), false);
+            settings.analyzeRequestHeadTokens(parseSettingInt(analyzeRequestHead));
+            settings.analyzeRequestTailTokens(parseSettingInt(analyzeRequestTail));
+            settings.analyzeResponseHeadTokens(parseSettingInt(analyzeResponseHead));
+            settings.analyzeResponseTailTokens(parseSettingInt(analyzeResponseTail));
+            settings.analyzeNotesTokens(parseSettingInt(analyzeNotes));
+            settings.analyzeRagHeadTokens(parseSettingInt(analyzeRagHead));
+            settings.analyzeRagTailTokens(parseSettingInt(analyzeRagTail));
+            settings.chatRequestHeadTokens(parseSettingInt(chatRequestHead));
+            settings.chatRequestTailTokens(parseSettingInt(chatRequestTail));
+            settings.chatResponseHeadTokens(parseSettingInt(chatResponseHead));
+            settings.chatResponseTailTokens(parseSettingInt(chatResponseTail));
+            settings.chatResponseExcerptChars(parseSettingInt(chatResponseExcerpt));
+            settings.chatNotesTokens(parseSettingInt(chatNotes));
+            settings.chatRagTokens(parseSettingInt(chatRag));
+            settings.deltaHeadTokens(parseSettingInt(deltaHead));
+            settings.deltaTailTokens(parseSettingInt(deltaTail));
             notesStore.root(settings.notesDirectory());
             refreshNoteList();
+            updateContextCounter();
             setStatus("Settings saved.");
         }
+    }
+
+    private int addSettingSection(JPanel panel, GridBagConstraints gbc, int row, String title) {
+        JLabel label = new JLabel(title);
+        label.setFont(label.getFont().deriveFont(Font.BOLD));
+        gbc.gridx = 0;
+        gbc.gridy = row;
+        gbc.gridwidth = 2;
+        gbc.weightx = 1;
+        gbc.weighty = 0;
+        gbc.fill = GridBagConstraints.HORIZONTAL;
+        panel.add(label, gbc);
+        gbc.gridwidth = 1;
+        return row + 1;
     }
 
     private int addSettingRow(JPanel panel, GridBagConstraints gbc, int row, String label, Component field) {
         gbc.gridx = 0;
         gbc.gridy = row;
         gbc.weightx = 0;
+        gbc.weighty = 0;
+        gbc.fill = GridBagConstraints.HORIZONTAL;
         panel.add(new JLabel(label), gbc);
         gbc.gridx = 1;
         gbc.weightx = 1;
         panel.add(field, gbc);
         return row + 1;
+    }
+
+    private int addSettingAreaRow(JPanel panel, GridBagConstraints gbc, int row, String label, JTextArea area) {
+        gbc.gridx = 0;
+        gbc.gridy = row;
+        gbc.weightx = 0;
+        gbc.weighty = 0;
+        gbc.fill = GridBagConstraints.HORIZONTAL;
+        panel.add(new JLabel(label), gbc);
+        gbc.gridx = 1;
+        gbc.weightx = 1;
+        gbc.weighty = 1;
+        gbc.fill = GridBagConstraints.BOTH;
+        panel.add(new JScrollPane(area), gbc);
+        return row + 1;
+    }
+
+    private JTextField intField(int value) {
+        JTextField field = TextContextMenu.field(Integer.toString(value));
+        field.setColumns(8);
+        return field;
+    }
+
+    private JTextArea settingsArea(String value, int rows) {
+        JTextArea area = TextContextMenu.area(rows, 70, true);
+        area.setText(Objects.toString(value, ""));
+        area.setLineWrap(true);
+        area.setWrapStyleWord(true);
+        area.setFont(new Font(Font.MONOSPACED, Font.PLAIN, 12));
+        return area;
+    }
+
+    private int parseSettingInt(JTextField field) {
+        try {
+            return Integer.parseInt(field.getText().trim());
+        } catch (NumberFormatException ignored) {
+            return -1;
+        }
+    }
+
+    private void saveSystemPrompt(JTextArea area, String defaultPrompt, boolean chat) {
+        String value = Objects.toString(area.getText(), "").trim();
+        if (value.equals(Objects.toString(defaultPrompt, "").trim())) {
+            value = "";
+        }
+        if (chat) {
+            settings.chatSystemPrompt(value);
+        } else {
+            settings.analyzeSystemPrompt(value);
+        }
     }
 
     private void syncSettingsFromControls() {
@@ -1205,10 +1343,18 @@ public final class CockpitPanel extends JPanel {
         updateTrafficView(snapshot);
         boolean analyze = "Analyze".equals(lastMode);
         int traffic = PromptBuilder.estimatedTokens(analyze
-                ? PromptBuilder.buildAnalyzeContext(snapshot, settings.deltaOnly(), state.lastPromptRequest(), state.lastPromptResponse())
-                : PromptBuilder.buildChatContext(snapshot, settings.deltaOnly(), state.lastPromptRequest(), state.lastPromptResponse()));
-        int notes = notesCheck.isSelected() ? PromptBuilder.estimatedTokens(PromptBuilder.notesContext(activeNoteContent())) : 0;
-        int rag = ragCheck.isSelected() ? PromptBuilder.estimatedTokens(lastRagDump) : 0;
+                ? PromptBuilder.buildAnalyzeContext(snapshot, settings, settings.deltaOnly(), state.lastPromptRequest(), state.lastPromptResponse())
+                : PromptBuilder.buildChatContext(snapshot, settings, settings.deltaOnly(), state.lastPromptRequest(), state.lastPromptResponse()));
+        int notes = notesCheck.isSelected()
+                ? PromptBuilder.estimatedTokens(analyze
+                        ? PromptBuilder.notesContext(settings, activeNoteContent())
+                        : PromptBuilder.firstTokens(activeNoteContent(), settings.chatNotesTokens()))
+                : 0;
+        int rag = ragCheck.isSelected()
+                ? PromptBuilder.estimatedTokens(analyze
+                        ? PromptBuilder.ragContext(settings, lastRagDump)
+                        : PromptBuilder.firstTokens(lastRagDump, settings.chatRagTokens()))
+                : 0;
         int total = traffic + notes + rag;
         contextLabel.setText("Mode: " + lastMode + " | Traffic " + fmt(traffic) + " | Notes " + (notesCheck.isSelected() ? fmt(notes) : "off") + " | RAG " + (ragCheck.isSelected() ? fmt(rag) : "off") + " | Total " + fmt(total));
     }
