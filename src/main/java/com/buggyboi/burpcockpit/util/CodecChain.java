@@ -30,6 +30,7 @@ public final class CodecChain {
     public static Result decode(String input, int maxDepth) {
         String current = Objects.toString(input, "");
         List<Step> steps = new ArrayList<>();
+        List<String> decodeOutputs = new ArrayList<>();
         Step previous = null;
 
         for (int depth = 0; depth < Math.max(0, maxDepth); depth++) {
@@ -38,6 +39,7 @@ public final class CodecChain {
                 Candidate candidate = url.get();
                 current = candidate.decoded();
                 steps.add(candidate.step());
+                decodeOutputs.add(current);
                 previous = candidate.step();
                 continue;
             }
@@ -47,6 +49,7 @@ public final class CodecChain {
                 Candidate candidate = base64.get();
                 current = candidate.decoded();
                 steps.add(candidate.step());
+                decodeOutputs.add(current);
                 previous = candidate.step();
                 continue;
             }
@@ -54,21 +57,29 @@ public final class CodecChain {
             break;
         }
 
-        return new Result(Objects.toString(input, ""), current, List.copyOf(steps));
+        return new Result(Objects.toString(input, ""), current, List.copyOf(steps), List.copyOf(decodeOutputs));
     }
 
     public static String reencode(String decoded, List<Step> steps) {
+        List<Layer> layers = encodeLayers(decoded, steps);
+        return layers.isEmpty() ? Objects.toString(decoded, "") : layers.get(layers.size() - 1).output();
+    }
+
+    public static List<Layer> encodeLayers(String decoded, List<Step> steps) {
         String current = Objects.toString(decoded, "");
         List<Step> chain = steps == null ? List.of() : steps;
+        List<Layer> layers = new ArrayList<>();
         for (int i = chain.size() - 1; i >= 0; i--) {
             Step step = chain.get(i);
+            String input = current;
             current = switch (step.kind()) {
                 case URL -> encodeUrl(current, step.urlFormSpaces());
                 case BASE64 -> encodeBase64(current, step.padded());
                 case BASE64URL -> encodeBase64Url(current, step.padded());
             };
+            layers.add(new Layer(step, input, current));
         }
-        return current;
+        return List.copyOf(layers);
     }
 
     private static Optional<Candidate> tryUrlDecode(String input, Step previous) {
@@ -205,9 +216,20 @@ public final class CodecChain {
         public String displayName() {
             return kind.displayName();
         }
+
+        public String decodeDisplayName() {
+            return displayName() + " decode";
+        }
+
+        public String encodeDisplayName() {
+            return displayName() + " encode";
+        }
     }
 
-    public record Result(String original, String decoded, List<Step> steps) {
+    public record Layer(Step step, String input, String output) {
+    }
+
+    public record Result(String original, String decoded, List<Step> steps, List<String> decodeOutputs) {
         public boolean decodedAnything() {
             return !steps.isEmpty();
         }
@@ -217,6 +239,30 @@ public final class CodecChain {
             List<String> names = new ArrayList<>();
             for (Step step : steps) names.add(step.displayName());
             return String.join(" -> ", names);
+        }
+
+        public String sandwichDisplay() {
+            if (steps.isEmpty()) return "plain";
+            List<String> names = new ArrayList<>();
+            for (Step step : steps) names.add(step.decodeDisplayName());
+            names.add("plain");
+            for (int i = steps.size() - 1; i >= 0; i--) names.add(steps.get(i).encodeDisplayName());
+            return String.join(" -> ", names);
+        }
+
+        public List<Layer> decodeLayers() {
+            List<Layer> layers = new ArrayList<>();
+            String current = original;
+            for (int i = 0; i < steps.size() && i < decodeOutputs.size(); i++) {
+                String output = decodeOutputs.get(i);
+                layers.add(new Layer(steps.get(i), current, output));
+                current = output;
+            }
+            return List.copyOf(layers);
+        }
+
+        public List<Layer> encodeLayers(String editedDecoded) {
+            return CodecChain.encodeLayers(editedDecoded, steps);
         }
 
         public String reencode(String editedDecoded) {

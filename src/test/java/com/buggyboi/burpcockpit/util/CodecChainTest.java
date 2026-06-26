@@ -13,6 +13,7 @@ public final class CodecChainTest {
         plainInputProducesNoChain();
         invalidBase64LookingInputDoesNotDecode();
         editedDecodedValueReencodesThroughSameChain();
+        nestedTraceMirrorsDecodePlainEncode();
     }
 
     private static void singleUrlEncoding() {
@@ -75,6 +76,24 @@ public final class CodecChainTest {
         assertKinds(roundTrip, CodecChain.Kind.URL, CodecChain.Kind.BASE64, CodecChain.Kind.URL);
     }
 
+    private static void nestedTraceMirrorsDecodePlainEncode() {
+        CodecChain.Result result = CodecChain.decode("aGVsbG8rd29ybGQ%3D");
+
+        List<CodecChain.Layer> decodeLayers = result.decodeLayers();
+        assertEquals(3, decodeLayers.size(), "decode layer count");
+        assertEquals("aGVsbG8rd29ybGQ=", decodeLayers.get(0).output(), "first decode layer");
+        assertEquals("hello+world", decodeLayers.get(1).output(), "second decode layer");
+        assertEquals("hello world", decodeLayers.get(2).output(), "plain decode layer");
+
+        List<CodecChain.Layer> encodeLayers = result.encodeLayers("hello there");
+        assertEquals(3, encodeLayers.size(), "encode layer count");
+        assertEquals("hello+there", encodeLayers.get(0).output(), "first encode layer");
+        assertEquals("aGVsbG8rdGhlcmU=", encodeLayers.get(1).output(), "second encode layer");
+        assertEquals("aGVsbG8rdGhlcmU%3D", encodeLayers.get(2).output(), "final encode layer");
+        assertEquals("URL decode -> Base64 decode -> URL decode -> plain -> URL encode -> Base64 encode -> URL encode",
+                result.sandwichDisplay(), "sandwich display");
+    }
+
     private static void assertKinds(CodecChain.Result result, CodecChain.Kind... expected) {
         List<CodecChain.Step> steps = result.steps();
         if (steps.size() != expected.length) {
@@ -89,6 +108,12 @@ public final class CodecChainTest {
 
     private static void assertEquals(String expected, String actual, String label) {
         if (!expected.equals(actual)) {
+            throw new AssertionError(label + ": expected [" + expected + "] but got [" + actual + "]");
+        }
+    }
+
+    private static void assertEquals(int expected, int actual, String label) {
+        if (expected != actual) {
             throw new AssertionError(label + ": expected [" + expected + "] but got [" + actual + "]");
         }
     }

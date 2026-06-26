@@ -23,6 +23,7 @@ import com.buggyboi.burpcockpit.util.PromptBuilder;
 
 import javax.swing.BorderFactory;
 import javax.swing.Box;
+import javax.swing.BoxLayout;
 import javax.swing.JButton;
 import javax.swing.JCheckBox;
 import javax.swing.JComboBox;
@@ -49,7 +50,6 @@ import java.awt.FlowLayout;
 import java.awt.Font;
 import java.awt.GridBagConstraints;
 import java.awt.GridBagLayout;
-import java.awt.GridLayout;
 import java.awt.Insets;
 import java.awt.Toolkit;
 import java.awt.Window;
@@ -490,7 +490,6 @@ public final class CockpitPanel extends JPanel {
         flushPendingNoteSave();
         setRequestEditorText(snapshot.requestText(), snapshot.service());
         setResponseEditorText(snapshot.responseText());
-        loadNoteForSnapshot(snapshot);
         historyLabel.setText(state.historyLabel());
         setStatus("Loaded " + HttpText.shortSummary(snapshot.requestText(), snapshot.service()));
         updateContextCounter();
@@ -639,7 +638,7 @@ public final class CockpitPanel extends JPanel {
     }
 
     private void showAutoDecodeDialog(ByteArray originalBytes, Range range, CodecChain.Result result) {
-        JTextArea originalArea = TextContextMenu.area(5, 86, false);
+        JTextArea originalArea = TextContextMenu.area(4, 86, false);
         originalArea.setText(result.original());
         originalArea.setCaretPosition(0);
 
@@ -647,20 +646,56 @@ public final class CockpitPanel extends JPanel {
         decodedArea.setText(result.decoded());
         decodedArea.setCaretPosition(0);
 
-        JTextArea previewArea = TextContextMenu.area(5, 86, false);
-        previewArea.setText(result.reencode(decodedArea.getText()));
-        previewArea.setCaretPosition(0);
+        List<JTextArea> encodeAreas = new ArrayList<>();
 
-        JLabel chainLabel = new JLabel("Detected chain: " + result.chainDisplay());
+        JTextArea chainPathArea = TextContextMenu.area(2, 86, false);
+        chainPathArea.setText("Layer path: " + result.sandwichDisplay());
+        chainPathArea.setLineWrap(true);
+        chainPathArea.setWrapStyleWord(true);
+        chainPathArea.setOpaque(false);
+        chainPathArea.setBorder(null);
 
-        JPanel fields = new JPanel(new GridLayout(3, 1, 0, 7));
+        JPanel fields = new JPanel();
+        fields.setLayout(new BoxLayout(fields, BoxLayout.Y_AXIS));
         fields.add(frame("Original selected text", new JScrollPane(originalArea)));
-        fields.add(frame("Decoded editable text", new JScrollPane(decodedArea)));
-        fields.add(frame("Re-encoded preview", new JScrollPane(previewArea)));
+
+        List<CodecChain.Layer> decodeLayers = result.decodeLayers();
+        for (int i = 0; i < Math.max(0, decodeLayers.size() - 1); i++) {
+            CodecChain.Layer layer = decodeLayers.get(i);
+            JTextArea layerArea = TextContextMenu.area(4, 86, false);
+            layerArea.setText(layer.output());
+            layerArea.setCaretPosition(0);
+            fields.add(Box.createVerticalStrut(7));
+            fields.add(frame("Decode " + (i + 1) + "/" + decodeLayers.size() + " - " + layer.step().decodeDisplayName(), new JScrollPane(layerArea)));
+        }
+
+        fields.add(Box.createVerticalStrut(7));
+        fields.add(frame(plainLayerTitle(decodeLayers), new JScrollPane(decodedArea)));
+
+        List<CodecChain.Layer> initialEncodeLayers = result.encodeLayers(decodedArea.getText());
+        for (int i = 0; i < initialEncodeLayers.size(); i++) {
+            CodecChain.Layer layer = initialEncodeLayers.get(i);
+            JTextArea encodeArea = TextContextMenu.area(4, 86, false);
+            encodeArea.setText(layer.output());
+            encodeArea.setCaretPosition(0);
+            encodeAreas.add(encodeArea);
+            String suffix = i == initialEncodeLayers.size() - 1 ? " (final replacement)" : "";
+            fields.add(Box.createVerticalStrut(7));
+            fields.add(frame("Encode " + (i + 1) + "/" + initialEncodeLayers.size() + " - " + layer.step().encodeDisplayName() + suffix, new JScrollPane(encodeArea)));
+        }
+
+        JScrollPane fieldsScroll = new JScrollPane(fields);
+        fieldsScroll.setBorder(null);
+        fieldsScroll.setPreferredSize(new Dimension(760, 430));
+        fieldsScroll.getVerticalScrollBar().setUnitIncrement(16);
 
         Runnable refreshPreview = () -> {
-            previewArea.setText(result.reencode(decodedArea.getText()));
-            previewArea.setCaretPosition(0);
+            List<CodecChain.Layer> layers = result.encodeLayers(decodedArea.getText());
+            for (int i = 0; i < encodeAreas.size() && i < layers.size(); i++) {
+                JTextArea area = encodeAreas.get(i);
+                area.setText(layers.get(i).output());
+                area.setCaretPosition(0);
+            }
         };
         decodedArea.getDocument().addDocumentListener(new DocumentListener() {
             @Override public void insertUpdate(DocumentEvent e) { refreshPreview.run(); }
@@ -680,8 +715,8 @@ public final class CockpitPanel extends JPanel {
 
         JPanel content = new JPanel(new BorderLayout(6, 6));
         content.setBorder(BorderFactory.createEmptyBorder(8, 8, 8, 8));
-        content.add(chainLabel, BorderLayout.NORTH);
-        content.add(fields, BorderLayout.CENTER);
+        content.add(chainPathArea, BorderLayout.NORTH);
+        content.add(fieldsScroll, BorderLayout.CENTER);
         content.add(buttons, BorderLayout.SOUTH);
 
         Window owner = SwingUtilities.getWindowAncestor(this);
@@ -691,7 +726,7 @@ public final class CockpitPanel extends JPanel {
 
         apply.addActionListener(e -> {
             try {
-                applyAutoDecodeReplacement(range, originalBytes, previewArea.getText());
+                applyAutoDecodeReplacement(range, originalBytes, result.reencode(decodedArea.getText()));
                 dialog.dispose();
             } catch (Throwable throwable) {
                 showError("Auto Decode apply failed", throwable);
@@ -716,6 +751,13 @@ public final class CockpitPanel extends JPanel {
         dialog.setMinimumSize(new Dimension(780, 580));
         dialog.setLocationRelativeTo(this);
         dialog.setVisible(true);
+    }
+
+    private static String plainLayerTitle(List<CodecChain.Layer> decodeLayers) {
+        if (decodeLayers == null || decodeLayers.isEmpty()) return "Plain editable text";
+        CodecChain.Layer finalDecode = decodeLayers.get(decodeLayers.size() - 1);
+        return "Plain editable text (after Decode " + decodeLayers.size() + "/" + decodeLayers.size()
+                + " - " + finalDecode.step().decodeDisplayName() + ")";
     }
 
     private void applyAutoDecodeReplacement(Range range, ByteArray originalBytes, String replacement) {
@@ -983,10 +1025,16 @@ public final class CockpitPanel extends JPanel {
         noteSelector.removeAllItems();
         List<String> names = notesStore.listNoteNames();
         for (String name : names) noteSelector.addItem(name);
+        if (!selected.isBlank() && names.contains(selected)) {
+            noteSelector.setSelectedItem(selected);
+            noteSelector.getEditor().setItem(selected);
+        } else {
+            noteSelector.setSelectedItem(null);
+            noteSelector.getEditor().setItem("");
+        }
         suppressNoteEvents = false;
-        if (!selected.isBlank() && names.contains(selected)) selectNote(selected);
-        else if (!names.isEmpty()) selectNote(names.get(0));
-        else noteNameField.setText(activeNoteName.isBlank() ? "DEFAULT" : activeNoteName);
+        if (activeNoteName.isBlank()) noteNameField.setText("");
+        else noteNameField.setText(activeNoteName);
         updateContextCounter();
     }
 
@@ -1014,13 +1062,16 @@ public final class CockpitPanel extends JPanel {
         String entered = JOptionPane.showInputDialog(this, "New note name", defaultName);
         String name = cleanOptionalNoteName(entered);
         if (name.isBlank()) return;
-        notesStore.ensureNote(name);
         refreshNoteList();
-        selectNote(name);
         activeNoteName = name;
-        setNoteText(notesStore.read(name));
+        noteNameField.setText(name);
+        suppressNoteEvents = true;
+        noteSelector.setSelectedItem(null);
+        noteSelector.getEditor().setItem("");
+        suppressNoteEvents = false;
+        setNoteText("");
         notesArea.setCaretPosition(0);
-        setStatus("Created note: " + name);
+        setStatus("New note ready: " + name + ". It will autosave after content is added.");
         updateContextCounter();
     }
 
@@ -1029,24 +1080,16 @@ public final class CockpitPanel extends JPanel {
         String name = selectedComboNoteName();
         if (name.isBlank()) name = currentNoteName();
         if (name.isBlank()) return;
-        notesStore.ensureNote(name);
+        if (!notesStore.exists(name)) {
+            setStatus("Note not found: " + name);
+            return;
+        }
         selectNote(name);
         activeNoteName = name;
         setNoteText(notesStore.read(name));
         notesArea.setCaretPosition(0);
         setStatus("Loaded note: " + name);
         updateContextCounter();
-    }
-
-    private void loadNoteForSnapshot(TrafficSnapshot snapshot) {
-        String name = noteNameForSnapshot(snapshot);
-        if (name.isBlank()) return;
-        name = notesStore.ensureNote(name);
-        refreshNoteList();
-        selectNote(name);
-        activeNoteName = name;
-        setNoteText(notesStore.read(name));
-        notesArea.setCaretPosition(0);
     }
 
     private void saveSelectedNote() {
@@ -1091,9 +1134,12 @@ public final class CockpitPanel extends JPanel {
     private void saveActiveNoteAfterEdit() {
         String name = noteSaveSourceName();
         if (name.isBlank()) return;
+        if (notesArea.getText().isBlank() && !notesStore.exists(name)) return;
         try {
             notesStore.write(name, notesArea.getText());
             activeNoteName = name;
+            refreshNoteList();
+            selectNote(name);
             setStatus("Saved note locally: " + name);
             updateContextCounter();
         } catch (Throwable throwable) {
@@ -1134,15 +1180,6 @@ public final class CockpitPanel extends JPanel {
     private static String cleanOptionalNoteName(Object value) {
         String raw = Objects.toString(value, "").trim();
         return raw.isBlank() ? "" : NotesStore.sanitizeName(raw);
-    }
-
-    private static String noteNameForSnapshot(TrafficSnapshot snapshot) {
-        if (snapshot == null) return "";
-        String host = snapshot.service() == null ? "" : snapshot.service().host();
-        if (host == null || host.isBlank()) {
-            host = HttpText.hostHeader(snapshot.requestText());
-        }
-        return cleanOptionalNoteName(host);
     }
 
     private void showSettingsDialog() {
