@@ -53,6 +53,8 @@ import java.awt.GridLayout;
 import java.awt.Insets;
 import java.awt.Toolkit;
 import java.awt.Window;
+import java.awt.event.ComponentAdapter;
+import java.awt.event.ComponentEvent;
 import java.awt.datatransfer.StringSelection;
 import java.lang.reflect.Array;
 import java.lang.reflect.Method;
@@ -115,6 +117,7 @@ public final class CockpitPanel extends JPanel {
     private JSplitPane mainSplitPane;
     private JTabbedPane rightTabs;
     private Component rightPane;
+    private int lastRightPaneDividerLocation = -1;
     private boolean rightPaneVisible = true;
     private Thread currentAiThread;
     private String lastRagDump = "";
@@ -238,7 +241,10 @@ public final class CockpitPanel extends JPanel {
 
         mainSplitPane = new JSplitPane(JSplitPane.HORIZONTAL_SPLIT, messages, rightPane);
         mainSplitPane.setResizeWeight(0.55);
+        messages.setMinimumSize(new Dimension(420, 0));
+        rightPane.setMinimumSize(new Dimension(320, 0));
         add(mainSplitPane, BorderLayout.CENTER);
+        initializeRightPaneDivider();
 
         JPanel bottom = new JPanel(new BorderLayout());
         bottom.setBorder(BorderFactory.createEmptyBorder(2, 6, 2, 6));
@@ -1247,16 +1253,51 @@ public final class CockpitPanel extends JPanel {
         return new Color(82, 86, 92);
     }
 
+    private void initializeRightPaneDivider() {
+        addComponentListener(new ComponentAdapter() {
+            @Override public void componentResized(ComponentEvent e) {
+                if (mainSplitPane.getWidth() <= 0 || !rightPaneVisible) return;
+                restoreRightPaneDivider();
+                removeComponentListener(this);
+            }
+        });
+        SwingUtilities.invokeLater(this::restoreRightPaneDivider);
+    }
+
     private void toggleRightPane() {
         if (rightPaneVisible) {
-            mainSplitPane.setRightComponent(new JPanel());
+            int dividerLocation = mainSplitPane.getDividerLocation();
+            if (dividerLocation > 0 && dividerLocation < mainSplitPane.getMaximumDividerLocation()) {
+                lastRightPaneDividerLocation = dividerLocation;
+            }
+            JPanel hiddenPane = new JPanel();
+            hiddenPane.setMinimumSize(new Dimension(0, 0));
+            mainSplitPane.setRightComponent(hiddenPane);
             mainSplitPane.setDividerLocation(1.0D);
             rightPaneVisible = false;
         } else {
             mainSplitPane.setRightComponent(rightPane);
             mainSplitPane.setResizeWeight(0.55D);
             rightPaneVisible = true;
+            restoreRightPaneDivider();
+            SwingUtilities.invokeLater(this::restoreRightPaneDivider);
         }
+    }
+
+    private void restoreRightPaneDivider() {
+        if (mainSplitPane.getWidth() <= 0) return;
+        int minimum = mainSplitPane.getMinimumDividerLocation();
+        int maximum = mainSplitPane.getMaximumDividerLocation();
+        if (maximum <= minimum) {
+            mainSplitPane.setDividerLocation(0.55D);
+            return;
+        }
+        int target = lastRightPaneDividerLocation > 0
+                ? Math.min(Math.max(lastRightPaneDividerLocation, minimum), maximum)
+                : (int) Math.round(mainSplitPane.getWidth() * 0.55D);
+        mainSplitPane.setDividerLocation(target);
+        mainSplitPane.revalidate();
+        mainSplitPane.repaint();
     }
 
     private void exportCurrent(String kind) {
