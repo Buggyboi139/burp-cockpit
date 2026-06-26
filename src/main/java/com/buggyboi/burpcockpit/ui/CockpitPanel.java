@@ -467,8 +467,10 @@ public final class CockpitPanel extends JPanel {
     }
 
     private void loadSnapshotWithoutPush(TrafficSnapshot snapshot) {
+        flushPendingNoteSave();
         setRequestEditorText(snapshot.requestText(), snapshot.service());
         setResponseEditorText(snapshot.responseText());
+        loadNoteForSnapshot(snapshot);
         historyLabel.setText(state.historyLabel());
         setStatus("Loaded " + HttpText.shortSummary(snapshot.requestText(), snapshot.service()));
         updateContextCounter();
@@ -855,6 +857,17 @@ public final class CockpitPanel extends JPanel {
         updateContextCounter();
     }
 
+    private void loadNoteForSnapshot(TrafficSnapshot snapshot) {
+        String name = noteNameForSnapshot(snapshot);
+        if (name.isBlank()) return;
+        name = notesStore.ensureNote(name);
+        refreshNoteList();
+        selectNote(name);
+        activeNoteName = name;
+        setNoteText(notesStore.read(name));
+        notesArea.setCaretPosition(0);
+    }
+
     private void saveSelectedNote() {
         if (noteSaveTimer != null) noteSaveTimer.stop();
         String targetName = currentNoteName();
@@ -919,6 +932,11 @@ public final class CockpitPanel extends JPanel {
     }
 
     private String selectedComboNoteName() {
+        Component editor = noteSelector.getEditor().getEditorComponent();
+        if (editor instanceof JTextField textField) {
+            String typed = cleanOptionalNoteName(textField.getText());
+            if (!typed.isBlank()) return typed;
+        }
         Object selected = noteSelector.getEditor().getItem();
         if (selected == null) selected = noteSelector.getSelectedItem();
         return cleanOptionalNoteName(selected);
@@ -927,6 +945,15 @@ public final class CockpitPanel extends JPanel {
     private static String cleanOptionalNoteName(Object value) {
         String raw = Objects.toString(value, "").trim();
         return raw.isBlank() ? "" : NotesStore.sanitizeName(raw);
+    }
+
+    private static String noteNameForSnapshot(TrafficSnapshot snapshot) {
+        if (snapshot == null) return "";
+        String host = snapshot.service() == null ? "" : snapshot.service().host();
+        if (host == null || host.isBlank()) {
+            host = HttpText.hostHeader(snapshot.requestText());
+        }
+        return cleanOptionalNoteName(host);
     }
 
     private void showSettingsDialog() {
