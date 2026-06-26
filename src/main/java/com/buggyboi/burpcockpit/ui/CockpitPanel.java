@@ -58,6 +58,7 @@ import java.awt.event.ComponentEvent;
 import java.awt.datatransfer.StringSelection;
 import java.lang.reflect.Array;
 import java.lang.reflect.Method;
+import java.net.ConnectException;
 import java.net.URI;
 import java.nio.charset.StandardCharsets;
 import java.time.Instant;
@@ -850,7 +851,12 @@ public final class CockpitPanel extends JPanel {
                         String query = PromptBuilder.ragQuery(state, userInstruction);
                         ragDump = lumaraClient.ragSearch(settings, query, 5, "both", promptSnapshot);
                     } catch (Throwable throwable) {
-                        ragDump = "RAG injection failed: " + Objects.toString(throwable.getMessage(), throwable.getClass().getSimpleName());
+                        String ragFailure = ragFailureMessage(settings.ragSearchEndpoint(), throwable);
+                        api.logging().logToError(ragFailure, throwable);
+                        TextContextMenu.later(() -> {
+                            setStatus(ragFailure);
+                            setChatStatus(ragFailure);
+                        });
                     }
                 }
 
@@ -940,6 +946,13 @@ public final class CockpitPanel extends JPanel {
     }
 
     private void setChatStatus(String status) { chatStatusLabel.setText(Objects.toString(status, "")); }
+
+    private static String ragFailureMessage(String endpoint, Throwable throwable) {
+        String reason = throwable instanceof ConnectException
+                ? "connection refused"
+                : Objects.toString(throwable.getMessage(), throwable.getClass().getSimpleName());
+        return "RAG skipped: " + reason + " at " + endpoint;
+    }
 
     private String activeNoteContent() {
         return activeNoteName.isBlank() ? "" : notesArea.getText();
