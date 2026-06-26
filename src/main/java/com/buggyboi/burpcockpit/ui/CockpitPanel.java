@@ -638,13 +638,17 @@ public final class CockpitPanel extends JPanel {
     }
 
     private void showAutoDecodeDialog(ByteArray originalBytes, Range range, CodecChain.Result result) {
+        List<JTextArea> wrappedAreas = new ArrayList<>();
+
         JTextArea originalArea = TextContextMenu.area(4, 86, false);
         originalArea.setText(result.original());
         originalArea.setCaretPosition(0);
+        wrappedAreas.add(originalArea);
 
         JTextArea decodedArea = TextContextMenu.area(8, 86, true);
         decodedArea.setText(result.decoded());
         decodedArea.setCaretPosition(0);
+        wrappedAreas.add(decodedArea);
 
         List<JTextArea> encodeAreas = new ArrayList<>();
 
@@ -665,6 +669,7 @@ public final class CockpitPanel extends JPanel {
             JTextArea layerArea = TextContextMenu.area(4, 86, false);
             layerArea.setText(layer.output());
             layerArea.setCaretPosition(0);
+            wrappedAreas.add(layerArea);
             fields.add(Box.createVerticalStrut(7));
             fields.add(frame("Decode " + (i + 1) + "/" + decodeLayers.size() + " - " + layer.step().decodeDisplayName(), new JScrollPane(layerArea)));
         }
@@ -679,6 +684,7 @@ public final class CockpitPanel extends JPanel {
             encodeArea.setText(layer.output());
             encodeArea.setCaretPosition(0);
             encodeAreas.add(encodeArea);
+            wrappedAreas.add(encodeArea);
             String suffix = i == initialEncodeLayers.size() - 1 ? " (final replacement)" : "";
             fields.add(Box.createVerticalStrut(7));
             fields.add(frame("Encode " + (i + 1) + "/" + initialEncodeLayers.size() + " - " + layer.step().encodeDisplayName() + suffix, new JScrollPane(encodeArea)));
@@ -704,10 +710,15 @@ public final class CockpitPanel extends JPanel {
         });
 
         JPanel buttons = new JPanel(new FlowLayout(FlowLayout.RIGHT, 8, 0));
+        JCheckBox wrapText = new JCheckBox("Wrap text", true);
+        wrapText.setToolTipText("Wrap long decoded and encoded values in the Auto Decode view.");
+        wrapText.addActionListener(e -> setTextWrap(wrappedAreas, wrapText.isSelected()));
+        setTextWrap(wrappedAreas, wrapText.isSelected());
         JButton apply = toolbarButton("Apply", "Replace only the original request selection.");
         JButton copyDecoded = toolbarButton("Copy decoded", "Copy the decoded editable text.");
         JButton sendToDecoder = toolbarButton("Send original to Burp Decoder", "Open the original selection in Burp Decoder.");
         JButton cancel = toolbarButton("Cancel", "Close without changing the request.");
+        buttons.add(wrapText);
         buttons.add(sendToDecoder);
         buttons.add(copyDecoded);
         buttons.add(cancel);
@@ -751,6 +762,15 @@ public final class CockpitPanel extends JPanel {
         dialog.setMinimumSize(new Dimension(780, 580));
         dialog.setLocationRelativeTo(this);
         dialog.setVisible(true);
+    }
+
+    private static void setTextWrap(List<JTextArea> areas, boolean wrap) {
+        for (JTextArea area : areas) {
+            area.setLineWrap(wrap);
+            area.setWrapStyleWord(wrap);
+            area.revalidate();
+            area.repaint();
+        }
     }
 
     private static String plainLayerTitle(List<CodecChain.Layer> decodeLayers) {

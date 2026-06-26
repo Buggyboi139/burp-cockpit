@@ -31,6 +31,7 @@ public final class PromptBuilder {
     public static String defaultChatSystemPrompt() {
         return "You are Lumara Cockpit inside Burp Suite, acting as a concise HTTP testing teammate. "
                 + "Answer the user's latest message directly. No summary unless required. No notes. Max 200 words unless the user asks for depth. "
+                + "Use short paragraphs or bullets with blank lines between sections. "
                 + "Use only the supplied HTTP context, optional read-only notes, and optional read-only RAG when they directly help. "
                 + "Do not claim to have saved notes, sent traffic, changed state, or tested anything outside the visible exchange. "
                 + "Do not invent endpoints, parameters, responses, credentials, or program rules.";
@@ -202,6 +203,7 @@ public final class PromptBuilder {
         prompt.append("Final answer layout rules:\n");
         prompt.append("Use compact Markdown. Use headings, short bullets, and fenced code blocks for exact HTTP, JSON, shell, or payload text.\n");
         prompt.append("No tables unless the user specifically asks. No giant paragraphs.\n");
+        prompt.append("For prose, use one or two short sentences per paragraph.\n");
         prompt.append("Leave a blank line between sections. Keep each bullet short and operational.\n\n");
     }
 

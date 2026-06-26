@@ -97,6 +97,9 @@ public final class TextContextMenu {
     }
 
     public static final class ChatTranscriptPane extends JEditorPane {
+        private static final int TARGET_PARAGRAPH_CHARS = 260;
+        private static final int HARD_WRAP_CHARS = 48;
+
         private final List<ChatCard> cards = new ArrayList<>();
         private int activeAssistantIndex = -1;
         private boolean rendering;
@@ -107,6 +110,10 @@ public final class TextContextMenu {
             putClientProperty(JEditorPane.HONOR_DISPLAY_PROPERTIES, Boolean.TRUE);
             setPreferredSize(new Dimension(cols * 8, rows * 18));
             render();
+        }
+
+        @Override public boolean getScrollableTracksViewportWidth() {
+            return true;
         }
 
         public void startTurn(String userRole, String userPrompt, boolean analysis) {
@@ -169,17 +176,17 @@ public final class TextContextMenu {
             StringBuilder html = new StringBuilder(4096);
             html.append("<html><head><style>")
                     .append("body{font-family:sans-serif;font-size:12px;background:").append(background).append(";color:").append(foreground).append(";margin:8px;}")
-                    .append(".card{border:1px solid #3d4148;border-left:4px solid #547aa5;margin:0 0 10px 0;padding:10px;background:#25272b;}")
+                    .append(".card{border:1px solid #3d4148;border-left:4px solid #547aa5;margin:0 0 10px 0;padding:10px;background:#25272b;max-width:100%;}")
                     .append(".user{border-left-color:#5291cc;background:#252932;}")
                     .append(".assistant{border-left-color:#3d9b75;background:#242c29;}")
                     .append(".analyze{border-left-color:#c58a24;background:#302c22;}")
                     .append(".role{font-size:11px;color:#c9ccd2;font-weight:bold;margin:0 0 7px 0;padding:0 0 5px 0;border-bottom:1px solid #3d4148;}")
-                    .append(".p{font-size:12px;margin:0 0 6px 0;}")
-                    .append(".h{font-size:12px;font-weight:bold;color:#f0f2f5;margin:7px 0 6px 0;}")
-                    .append(".li{font-size:12px;margin:0 0 5px 14px;}")
+                    .append(".p{font-size:12px;line-height:1.35;margin:0 0 9px 0;overflow-wrap:anywhere;word-wrap:break-word;}")
+                    .append(".h{font-size:12px;font-weight:bold;color:#f0f2f5;margin:10px 0 6px 0;overflow-wrap:anywhere;word-wrap:break-word;}")
+                    .append(".li{font-size:12px;line-height:1.35;margin:0 0 6px 14px;overflow-wrap:anywhere;word-wrap:break-word;}")
                     .append(".quote{font-size:12px;border-left:3px solid #6b7280;margin:6px 0;padding:2px 0 2px 8px;color:#c9ccd2;}")
-                    .append("pre{font-family:monospaced;font-size:12px;background:#17191c;border:1px solid #3d4148;padding:8px;white-space:pre-wrap;margin:7px 0 8px 0;}")
-                    .append("code{font-family:monospaced;font-size:12px;background:#1b1e22;padding:1px 3px;}")
+                    .append("pre{font-family:monospaced;font-size:12px;background:#17191c;border:1px solid #3d4148;padding:8px;white-space:pre-wrap;margin:7px 0 8px 0;overflow-wrap:anywhere;word-wrap:break-word;}")
+                    .append("code{font-family:monospaced;font-size:12px;background:#1b1e22;padding:1px 3px;overflow-wrap:anywhere;word-wrap:break-word;}")
                     .append("a{color:#80bfff;}")
                     .append("</style></head><body>");
             for (ChatCard card : cards) {
@@ -213,7 +220,7 @@ public final class TextContextMenu {
                     continue;
                 }
                 if (inFence) {
-                    out.append(escape(raw)).append("\n");
+                    out.append(breakableHtml(escape(raw))).append("\n");
                 } else if (line.isBlank()) {
                     out.append("<div class='p'>&nbsp;</div>");
                 } else if (line.matches("^#{1,6}\\s+.*")) {
@@ -225,11 +232,51 @@ public final class TextContextMenu {
                 } else if (line.startsWith(">")) {
                     out.append("<div class='quote'>").append(inlineMarkdown(line.replaceFirst("^>\\s?", ""))).append("</div>");
                 } else {
-                    out.append("<div class='p'>").append(inlineMarkdown(raw)).append("</div>");
+                    for (String paragraph : readableParagraphs(raw)) {
+                        out.append("<div class='p'>").append(inlineMarkdown(paragraph)).append("</div>");
+                    }
                 }
             }
             if (inFence) out.append("</code></pre>");
             return out.toString();
+        }
+
+        private static List<String> readableParagraphs(String raw) {
+            String text = Objects.toString(raw, "").trim();
+            if (text.length() <= TARGET_PARAGRAPH_CHARS) return List.of(raw);
+
+            List<String> sentences = splitSentences(text);
+            if (sentences.size() <= 1) return List.of(raw);
+
+            List<String> paragraphs = new ArrayList<>();
+            StringBuilder paragraph = new StringBuilder();
+            for (String sentence : sentences) {
+                if (!paragraph.isEmpty() && paragraph.length() + sentence.length() + 1 > TARGET_PARAGRAPH_CHARS) {
+                    paragraphs.add(paragraph.toString());
+                    paragraph.setLength(0);
+                }
+                if (!paragraph.isEmpty()) paragraph.append(' ');
+                paragraph.append(sentence);
+            }
+            if (!paragraph.isEmpty()) paragraphs.add(paragraph.toString());
+            return paragraphs;
+        }
+
+        private static List<String> splitSentences(String text) {
+            List<String> sentences = new ArrayList<>();
+            int start = 0;
+            for (int i = 0; i < text.length() - 1; i++) {
+                char ch = text.charAt(i);
+                if (ch != '.' && ch != '!' && ch != '?') continue;
+                int next = i + 1;
+                while (next < text.length() && Character.isWhitespace(text.charAt(next))) next++;
+                if (next >= text.length() || !Character.isUpperCase(text.charAt(next))) continue;
+                sentences.add(text.substring(start, i + 1).trim());
+                start = next;
+                i = next;
+            }
+            if (start < text.length()) sentences.add(text.substring(start).trim());
+            return sentences;
         }
 
         private static String inlineMarkdown(String value) {
@@ -239,7 +286,55 @@ public final class TextContextMenu {
             escaped = escaped.replaceAll("__([^_]+)__", "<b>$1</b>");
             escaped = escaped.replaceAll("(?<!\\*)\\*([^*]+)\\*(?!\\*)", "<i>$1</i>");
             escaped = escaped.replaceAll("\\[([^\\]]+)]\\((https?://[^\\s)]+|mailto:[^\\s)]+)\\)", "<a href='$2'>$1</a>");
-            return escaped;
+            return breakableHtml(escaped);
+        }
+
+        private static String breakableHtml(String html) {
+            StringBuilder out = new StringBuilder(html.length() + html.length() / HARD_WRAP_CHARS);
+            int runLength = 0;
+            boolean inTag = false;
+            boolean inEntity = false;
+            for (int i = 0; i < html.length(); i++) {
+                char ch = html.charAt(i);
+                out.append(ch);
+
+                if (inTag) {
+                    if (ch == '>') inTag = false;
+                    continue;
+                }
+                if (inEntity) {
+                    if (ch == ';') {
+                        inEntity = false;
+                        runLength++;
+                    }
+                    continue;
+                }
+                if (ch == '<') {
+                    inTag = true;
+                    continue;
+                }
+                if (ch == '&') {
+                    inEntity = true;
+                    continue;
+                }
+                if (Character.isWhitespace(ch)) {
+                    runLength = 0;
+                    continue;
+                }
+
+                runLength++;
+                if (isSoftBreakCharacter(ch) || runLength >= HARD_WRAP_CHARS) {
+                    out.append("&#8203;");
+                    runLength = 0;
+                }
+            }
+            return out.toString();
+        }
+
+        private static boolean isSoftBreakCharacter(char ch) {
+            return ch == '/' || ch == '\\' || ch == '?' || ch == '&' || ch == '=' || ch == ','
+                    || ch == ':' || ch == ';' || ch == '.' || ch == '-' || ch == '_' || ch == ')'
+                    || ch == ']' || ch == '}';
         }
 
         private static String escape(String value) {
