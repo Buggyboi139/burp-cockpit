@@ -16,6 +16,7 @@ public final class CockpitState {
     private TrafficSnapshot current;
     private int historyIndex = -1;
     private String lastPromptRequest = "";
+    private String lastPromptResponse = "";
 
     public CockpitState(MontoyaApi api, CockpitSettings settings, NotesStore notesStore) {
         this.api = api;
@@ -59,7 +60,7 @@ public final class CockpitState {
             current = snapshot;
             historyIndex = 0;
         }
-        lastPromptRequest = "";
+        lastPromptSnapshot(snapshot);
     }
 
     public synchronized Optional<TrafficSnapshot> current() { return Optional.ofNullable(current); }
@@ -84,4 +85,10 @@ public final class CockpitState {
     public synchronized String currentResponse() { return current == null ? "" : current.responseText(); }
     public synchronized String lastPromptRequest() { return lastPromptRequest; }
     public synchronized void lastPromptRequest(String value) { lastPromptRequest = value == null ? "" : value; }
+    public synchronized String lastPromptResponse() { return lastPromptResponse; }
+    public synchronized void lastPromptResponse(String value) { lastPromptResponse = value == null ? "" : value; }
+    public synchronized void lastPromptSnapshot(TrafficSnapshot snapshot) {
+        lastPromptRequest = snapshot == null ? "" : snapshot.requestText();
+        lastPromptResponse = snapshot == null ? "" : snapshot.responseText();
+    }
 }

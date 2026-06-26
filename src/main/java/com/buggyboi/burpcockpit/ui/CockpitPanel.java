@@ -814,6 +814,7 @@ public final class CockpitPanel extends JPanel {
     private void runAi(boolean analysis) {
         syncSettingsFromControls();
         syncSnapshotFromEditors(analysis ? "analysis context" : "chat context");
+        TrafficSnapshot promptSnapshot = state.current().orElse(null);
         if (looksLikeBurpErrorHtml(requestText())) {
             showError("The current request is Burp's HTML proxy error page. Reload the original request, then run analysis again.", null);
             return;
@@ -855,8 +856,8 @@ public final class CockpitPanel extends JPanel {
 
                 String noteContext = notesCheck.isSelected() ? activeNoteContent() : "";
                 String prompt = analysis
-                        ? PromptBuilder.analysisPrompt(state, userInstruction, noteContext, ragDump)
-                        : PromptBuilder.chatPrompt(state, userInstruction, noteContext, ragDump);
+                        ? PromptBuilder.analysisPrompt(state, promptSnapshot, userInstruction, noteContext, ragDump)
+                        : PromptBuilder.chatPrompt(state, promptSnapshot, userInstruction, noteContext, ragDump);
                 String system = PromptBuilder.systemPrompt(settings.includeThinking(), analysis);
 
                 lumaraClient.streamChat(settings, system, prompt, contentToken -> TextContextMenu.later(() -> {
@@ -873,7 +874,7 @@ public final class CockpitPanel extends JPanel {
                     if (!contentStarted.get()) {
                         replaceActiveAssistantText("No streamed content was returned by the model.");
                     }
-                    state.lastPromptRequest(requestText());
+                    state.lastPromptSnapshot(promptSnapshot);
                     setStatus("AI response ready.");
                     setChatStatus("AI response ready.");
                     updateContextCounter();
@@ -1180,7 +1181,9 @@ public final class CockpitPanel extends JPanel {
         TrafficSnapshot snapshot = new TrafficSnapshot(service, requestText, responseText(), Instant.now(), "counter");
         updateTrafficView(snapshot);
         boolean analyze = "Analyze".equals(lastMode);
-        int traffic = PromptBuilder.estimatedTokens(analyze ? PromptBuilder.buildAnalyzeContext(snapshot) : PromptBuilder.buildChatContext(snapshot));
+        int traffic = PromptBuilder.estimatedTokens(analyze
+                ? PromptBuilder.buildAnalyzeContext(snapshot, settings.deltaOnly(), state.lastPromptRequest(), state.lastPromptResponse())
+                : PromptBuilder.buildChatContext(snapshot, settings.deltaOnly(), state.lastPromptRequest(), state.lastPromptResponse()));
         int notes = notesCheck.isSelected() ? PromptBuilder.estimatedTokens(PromptBuilder.notesContext(activeNoteContent())) : 0;
         int rag = ragCheck.isSelected() ? PromptBuilder.estimatedTokens(lastRagDump) : 0;
         int total = traffic + notes + rag;
