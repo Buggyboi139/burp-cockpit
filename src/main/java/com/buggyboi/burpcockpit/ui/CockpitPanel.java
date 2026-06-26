@@ -18,6 +18,7 @@ import com.buggyboi.burpcockpit.util.JsonUtil;
 import com.buggyboi.burpcockpit.util.PromptBuilder;
 
 import javax.swing.BorderFactory;
+import javax.swing.Box;
 import javax.swing.JButton;
 import javax.swing.JCheckBox;
 import javax.swing.JComboBox;
@@ -32,6 +33,7 @@ import javax.swing.JTextField;
 import javax.swing.JToolBar;
 import javax.swing.Timer;
 import java.awt.BorderLayout;
+import java.awt.Color;
 import java.awt.Component;
 import java.awt.Dimension;
 import java.awt.FlowLayout;
@@ -44,6 +46,8 @@ import java.awt.datatransfer.StringSelection;
 import java.lang.reflect.Array;
 import java.lang.reflect.Method;
 import java.net.URI;
+import java.net.URLDecoder;
+import java.nio.charset.StandardCharsets;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
@@ -61,6 +65,11 @@ public final class CockpitPanel extends JPanel {
     private static final Dimension TOKEN_SELECTOR_SIZE = new Dimension(58, 24);
     private static final Dimension NOTE_SELECTOR_SIZE = new Dimension(230, 24);
     private static final Dimension NOTE_NAME_SIZE = new Dimension(230, 24);
+    private static final Dimension SEARCH_FIELD_SIZE = new Dimension(190, 24);
+    private static final Color HEADER_ACCENT = new Color(82, 145, 204);
+    private static final Color COOKIE_ACCENT = new Color(197, 138, 36);
+    private static final Color PARAM_ACCENT = new Color(61, 155, 117);
+    private static final Color BODY_ACCENT = new Color(138, 110, 196);
 
     private final MontoyaApi api;
     private final CockpitState state;
@@ -73,6 +82,14 @@ public final class CockpitPanel extends JPanel {
     private final TextContextMenu.ChatTranscriptPane transcriptArea = TextContextMenu.transcript(24, 70);
     private final JTextArea promptArea = TextContextMenu.area(4, 70, true);
     private final JTextArea notesArea = TextContextMenu.area(24, 70, true);
+    private final JTextField requestSearchField = TextContextMenu.field("");
+    private final JTextField responseSearchField = TextContextMenu.field("");
+    private final JLabel requestSummaryLabel = new JLabel("No request loaded.");
+    private final JLabel responseSummaryLabel = new JLabel("No response loaded.");
+    private final JTextArea headersInspector = inspectorArea();
+    private final JTextArea cookiesInspector = inspectorArea();
+    private final JTextArea paramsInspector = inspectorArea();
+    private final JTextArea bodyInspector = inspectorArea();
 
     private final JTextField chatEndpointField;
     private final JTextField modelField;
@@ -158,6 +175,12 @@ public final class CockpitPanel extends JPanel {
         promptArea.setWrapStyleWord(true);
         notesArea.setLineWrap(true);
         notesArea.setWrapStyleWord(true);
+        configureSearchField(requestSearchField, true);
+        configureSearchField(responseSearchField, false);
+        configureInspectorArea(headersInspector);
+        configureInspectorArea(cookiesInspector);
+        configureInspectorArea(paramsInspector);
+        configureInspectorArea(bodyInspector);
 
         tokenSelector.setPrototypeDisplayValue("20k");
         tokenSelector.setPreferredSize(TOKEN_SELECTOR_SIZE);
@@ -190,11 +213,14 @@ public final class CockpitPanel extends JPanel {
         setPreferredSize(new Dimension(1300, 880));
         add(buildToolbar(), BorderLayout.NORTH);
 
-        JSplitPane left = new JSplitPane(
+        JSplitPane messages = new JSplitPane(
                 JSplitPane.VERTICAL_SPLIT,
-                frame("Request", requestEditor.uiComponent()),
-                frame("Response from last sent or opened exchange", responseEditor.uiComponent()));
-        left.setResizeWeight(0.68);
+                buildMessagePanel("Request", requestEditor.uiComponent(), requestSearchField, true),
+                buildMessagePanel("Response", responseEditor.uiComponent(), responseSearchField, false));
+        messages.setResizeWeight(0.62);
+
+        JSplitPane left = new JSplitPane(JSplitPane.VERTICAL_SPLIT, messages, buildInspectorPanel());
+        left.setResizeWeight(0.76);
 
         rightTabs = new JTabbedPane();
         rightTabs.addTab("Analysis", buildAnalysisPanel());
@@ -215,57 +241,181 @@ public final class CockpitPanel extends JPanel {
     private Component buildToolbar() {
         JToolBar bar = new JToolBar();
         bar.setFloatable(false);
+        bar.setBorder(BorderFactory.createEmptyBorder(5, 6, 5, 6));
 
-        JButton newButton = new JButton("New");
+        JButton newButton = toolbarButton("New", "Start a fresh editable request.");
         newButton.addActionListener(e -> openStarterRequest());
-        bar.add(newButton);
 
-        JButton previous = new JButton("←");
+        JButton previous = toolbarButton("←", "Load the previous Cockpit history item.");
         previous.addActionListener(e -> state.previous().ifPresent(this::loadSnapshotWithoutPush));
-        bar.add(previous);
 
-        JButton next = new JButton("→");
+        JButton next = toolbarButton("→", "Load the next Cockpit history item.");
         next.addActionListener(e -> state.next().ifPresent(this::loadSnapshotWithoutPush));
-        bar.add(next);
 
-        JButton send = new JButton("Send");
+        addToolbarGroup(bar, "Navigate", newButton, previous, next);
+
+        JButton send = toolbarButton("Send", "Send the current request through Burp.");
+        send.setFont(send.getFont().deriveFont(Font.BOLD));
+        send.setBackground(HEADER_ACCENT);
+        send.setForeground(Color.WHITE);
+        send.setOpaque(true);
         send.addActionListener(e -> sendCurrentRequest());
-        bar.add(send);
 
-        JButton refreshCookies = new JButton("Refresh Cookies");
+        JButton refreshCookies = toolbarButton("Cookies", "Refresh matching cookies from Burp's cookie jar.");
         refreshCookies.addActionListener(e -> refreshCookiesFromBurp());
-        bar.add(refreshCookies);
 
-        JButton clearCache = new JButton("Clear Cache");
+        JButton clearCache = toolbarButton("Clear Cache", "Reset AI context to the visible request and response.");
         clearCache.addActionListener(e -> clearContextCache());
-        bar.add(clearCache);
 
-        JButton exportCurl = new JButton("Export curl");
+        addToolbarGroup(bar, "Traffic", send, refreshCookies, clearCache);
+
+        JButton exportCurl = toolbarButton("curl", "Copy the current request as a curl command.");
         exportCurl.addActionListener(e -> exportCurrent("curl"));
-        bar.add(exportCurl);
 
-        JButton exportPython = new JButton("Export Python");
+        JButton exportPython = toolbarButton("Python", "Copy the current request as Python requests code.");
         exportPython.addActionListener(e -> exportCurrent("python"));
-        bar.add(exportPython);
 
-        JButton toggleRight = new JButton("Hide Right Pane");
+        addToolbarGroup(bar, "Export", exportCurl, exportPython);
+
+        JButton toggleRight = toolbarButton("Hide Panel", "Show or hide the Analysis and Notes panel.");
         toggleRight.addActionListener(e -> {
             toggleRightPane();
-            toggleRight.setText(rightPaneVisible ? "Hide Right Pane" : "Show Right Pane");
+            toggleRight.setText(rightPaneVisible ? "Hide Panel" : "Show Panel");
         });
-        bar.add(toggleRight);
 
-        JButton settingsButton = new JButton("Settings");
+        JButton settingsButton = toolbarButton("Settings", "Open Burp Cockpit settings.");
         settingsButton.addActionListener(e -> showSettingsDialog());
-        bar.add(settingsButton);
 
-        bar.addSeparator();
-        bar.add(new JLabel("Tokens "));
-        bar.add(tokenSelector);
-        bar.add(thinkingCheck);
-        bar.add(deltaCheck);
-        bar.add(ragCheck);
+        addToolbarGroup(bar, "View", toggleRight, settingsButton);
+
+        JPanel context = toolbarSection("AI Context");
+        context.add(new JLabel("Tokens"));
+        context.add(tokenSelector);
+        context.add(thinkingCheck);
+        context.add(deltaCheck);
+        context.add(ragCheck);
+        bar.add(context);
         return bar;
+    }
+
+    private void addToolbarGroup(JToolBar bar, String title, Component... components) {
+        if (bar.getComponentCount() > 0) bar.add(Box.createHorizontalStrut(10));
+        JPanel group = toolbarSection(title);
+        for (Component component : components) group.add(component);
+        bar.add(group);
+    }
+
+    private JPanel toolbarSection(String title) {
+        JPanel group = new JPanel(new FlowLayout(FlowLayout.LEFT, 5, 0));
+        group.setBorder(BorderFactory.createCompoundBorder(
+                BorderFactory.createMatteBorder(0, 0, 0, 1, mutedBorderColor()),
+                BorderFactory.createEmptyBorder(0, 0, 0, 10)));
+        JLabel label = new JLabel(title);
+        label.setFont(label.getFont().deriveFont(Font.BOLD, 11.0F));
+        group.add(label);
+        return group;
+    }
+
+    private JPanel compactGroup() {
+        JPanel group = new JPanel(new FlowLayout(FlowLayout.LEFT, 5, 0));
+        group.setBorder(BorderFactory.createCompoundBorder(
+                BorderFactory.createLineBorder(mutedBorderColor()),
+                BorderFactory.createEmptyBorder(2, 5, 2, 5)));
+        return group;
+    }
+
+    private JButton toolbarButton(String text, String tooltip) {
+        JButton button = new JButton(text);
+        button.setToolTipText(tooltip);
+        button.setMargin(new Insets(3, 10, 3, 10));
+        button.setFocusable(false);
+        return button;
+    }
+
+    private JPanel buildMessagePanel(String title, Component editor, JTextField searchField, boolean request) {
+        JPanel panel = new JPanel(new BorderLayout());
+        panel.setBorder(BorderFactory.createCompoundBorder(
+                BorderFactory.createLineBorder(mutedBorderColor()),
+                BorderFactory.createEmptyBorder(0, 0, 0, 0)));
+
+        JPanel header = new JPanel(new BorderLayout(8, 0));
+        header.setBorder(BorderFactory.createEmptyBorder(5, 7, 5, 7));
+        JLabel titleLabel = new JLabel(title);
+        titleLabel.setFont(titleLabel.getFont().deriveFont(Font.BOLD));
+        header.add(titleLabel, BorderLayout.WEST);
+
+        JPanel search = new JPanel(new FlowLayout(FlowLayout.RIGHT, 5, 0));
+        search.add(new JLabel("Search"));
+        search.add(searchField);
+        JButton clear = toolbarButton("Clear", "Clear " + title.toLowerCase(Locale.ROOT) + " search.");
+        clear.addActionListener(e -> {
+            searchField.setText("");
+            applyEditorSearch(request);
+        });
+        search.add(clear);
+        header.add(search, BorderLayout.EAST);
+
+        JLabel summary = request ? requestSummaryLabel : responseSummaryLabel;
+        summary.setBorder(BorderFactory.createCompoundBorder(
+                BorderFactory.createMatteBorder(1, 0, 0, 0, mutedBorderColor()),
+                BorderFactory.createEmptyBorder(3, 7, 3, 7)));
+
+        panel.add(header, BorderLayout.NORTH);
+        panel.add(editor, BorderLayout.CENTER);
+        panel.add(summary, BorderLayout.SOUTH);
+        return panel;
+    }
+
+    private JTabbedPane buildInspectorPanel() {
+        JTabbedPane tabs = new JTabbedPane();
+        tabs.addTab("Headers", inspectorTab(headersInspector, HEADER_ACCENT));
+        tabs.addTab("Cookies", inspectorTab(cookiesInspector, COOKIE_ACCENT));
+        tabs.addTab("Params", inspectorTab(paramsInspector, PARAM_ACCENT));
+        tabs.addTab("Body", inspectorTab(bodyInspector, BODY_ACCENT));
+        tabs.setForegroundAt(0, HEADER_ACCENT);
+        tabs.setForegroundAt(1, COOKIE_ACCENT);
+        tabs.setForegroundAt(2, PARAM_ACCENT);
+        tabs.setForegroundAt(3, BODY_ACCENT);
+        tabs.setPreferredSize(new Dimension(720, 210));
+        return tabs;
+    }
+
+    private JPanel inspectorTab(JTextArea area, Color accent) {
+        JPanel panel = new JPanel(new BorderLayout());
+        JPanel stripe = new JPanel();
+        stripe.setPreferredSize(new Dimension(5, 1));
+        stripe.setBackground(accent);
+        JScrollPane scroll = new JScrollPane(area);
+        scroll.setBorder(BorderFactory.createEmptyBorder());
+        panel.setBorder(BorderFactory.createLineBorder(mutedBorderColor()));
+        panel.add(stripe, BorderLayout.WEST);
+        panel.add(scroll, BorderLayout.CENTER);
+        return panel;
+    }
+
+    private void configureSearchField(JTextField field, boolean request) {
+        field.setPreferredSize(SEARCH_FIELD_SIZE);
+        field.setMaximumSize(SEARCH_FIELD_SIZE);
+        field.setToolTipText(request ? "Search only the request editor." : "Search only the response editor.");
+        field.addActionListener(e -> applyEditorSearch(request));
+    }
+
+    private void applyEditorSearch(boolean request) {
+        String expression = request ? requestSearchField.getText() : responseSearchField.getText();
+        if (request) requestEditor.setSearchExpression(expression);
+        else responseEditor.setSearchExpression(expression);
+    }
+
+    private static JTextArea inspectorArea() {
+        JTextArea area = TextContextMenu.area(8, 42, false);
+        area.setLineWrap(false);
+        area.setWrapStyleWord(false);
+        return area;
+    }
+
+    private void configureInspectorArea(JTextArea area) {
+        area.setFont(new Font(Font.MONOSPACED, Font.PLAIN, 12));
+        area.setBorder(BorderFactory.createEmptyBorder(7, 8, 7, 8));
     }
 
     private Component buildAnalysisPanel() {
@@ -287,25 +437,29 @@ public final class CockpitPanel extends JPanel {
         promptScroll.setBorder(BorderFactory.createEmptyBorder());
         south.add(promptScroll, BorderLayout.CENTER);
 
-        JPanel buttons = new JPanel(new FlowLayout(FlowLayout.RIGHT));
-        buttons.add(notesCheck);
-        buttons.add(ragCheck);
+        JPanel buttons = new JPanel(new FlowLayout(FlowLayout.RIGHT, 8, 4));
+        JPanel contextButtons = compactGroup();
+        contextButtons.add(notesCheck);
+        contextButtons.add(ragCheck);
+        buttons.add(contextButtons);
 
-        JButton chat = new JButton("Send Chat");
+        JPanel actionButtons = compactGroup();
+        JButton chat = toolbarButton("Send Chat", "Send the prompt as a short chat question.");
         chat.addActionListener(e -> runChatFromUi());
-        buttons.add(chat);
+        actionButtons.add(chat);
 
-        JButton analyze = new JButton("Analyze");
+        JButton analyze = toolbarButton("Analyze", "Run a deeper security analysis over the current traffic.");
         analyze.addActionListener(e -> runAnalysisFromUi());
-        buttons.add(analyze);
+        actionButtons.add(analyze);
 
-        JButton stop = new JButton("Stop");
+        JButton stop = toolbarButton("Stop", "Cancel the current AI request.");
         stop.addActionListener(e -> stopCurrentAiWorker());
-        buttons.add(stop);
+        actionButtons.add(stop);
 
-        JButton clearChat = new JButton("Clear Chat");
+        JButton clearChat = toolbarButton("Clear", "Clear the chat transcript.");
         clearChat.addActionListener(e -> clearChatTranscript());
-        buttons.add(clearChat);
+        actionButtons.add(clearChat);
+        buttons.add(actionButtons);
 
         south.add(buttons, BorderLayout.SOUTH);
         panel.add(south, BorderLayout.SOUTH);
@@ -470,7 +624,7 @@ public final class CockpitPanel extends JPanel {
     private void sendCurrentRequest() {
         syncSettingsFromControls();
         quietSaveActiveNote();
-        syncSnapshotFromEditors("pre-send");
+        updateContextCounter();
         String raw = HttpText.normalizeLineEndings(requestText());
         if (looksLikeBurpErrorHtml(raw)) {
             showError("The request editor contains Burp's HTML proxy error page, not the target request. Reload the original target request from Burp history/repeater.", null);
@@ -898,6 +1052,7 @@ public final class CockpitPanel extends JPanel {
         if (service == null) service = editorService().orElse(null);
         if (service == null) service = HttpText.inferService(requestText, true).orElse(null);
         TrafficSnapshot snapshot = new TrafficSnapshot(service, requestText, responseText(), Instant.now(), "counter");
+        updateTrafficView(snapshot);
         boolean analyze = "Analyze".equals(lastMode);
         int traffic = PromptBuilder.estimatedTokens(analyze ? PromptBuilder.buildAnalyzeContext(snapshot) : PromptBuilder.buildChatContext(snapshot));
         int notes = notesCheck.isSelected() ? PromptBuilder.estimatedTokens(PromptBuilder.notesContext(activeNoteContent())) : 0;
@@ -907,6 +1062,187 @@ public final class CockpitPanel extends JPanel {
     }
 
     private static String fmt(int tokens) { return String.format("%.1fk", tokens / 1000.0D); }
+
+    private void updateTrafficView(TrafficSnapshot snapshot) {
+        String request = snapshot == null ? "" : snapshot.requestText();
+        String response = snapshot == null ? "" : snapshot.responseText();
+        String methodPath = HttpText.methodAndPath(request);
+        String host = snapshot == null || snapshot.service() == null ? HttpText.hostHeader(request) : snapshot.service().host();
+        requestSummaryLabel.setText((methodPath.isBlank() ? "No request line" : methodPath)
+                + " | Host " + (host == null || host.isBlank() ? "unknown" : host)
+                + " | " + byteCount(request));
+        responseSummaryLabel.setText(response.isBlank()
+                ? "No response loaded."
+                : firstLine(response) + " | Body " + byteCount(HttpText.body(response)));
+        headersInspector.setText(headerInspectorText(request, response));
+        cookiesInspector.setText(cookieInspectorText(request, response));
+        paramsInspector.setText(paramInspectorText(request));
+        bodyInspector.setText(bodyInspectorText(request, response));
+        for (JTextArea area : List.of(headersInspector, cookiesInspector, paramsInspector, bodyInspector)) area.setCaretPosition(0);
+    }
+
+    private static String headerInspectorText(String request, String response) {
+        StringBuilder out = new StringBuilder();
+        appendHeaderBlock(out, "Request headers", request);
+        out.append('\n');
+        appendHeaderBlock(out, "Response headers", response);
+        return out.toString().trim();
+    }
+
+    private static void appendHeaderBlock(StringBuilder out, String title, String message) {
+        out.append(title).append('\n');
+        List<String> headers = messageHeaders(message);
+        if (headers.isEmpty()) {
+            out.append("  No headers found.\n");
+            return;
+        }
+        for (String header : headers) out.append("  ").append(header).append('\n');
+    }
+
+    private static String cookieInspectorText(String request, String response) {
+        StringBuilder out = new StringBuilder();
+        out.append("Request cookies\n");
+        List<String> requestCookies = requestCookies(request);
+        if (requestCookies.isEmpty()) out.append("  No Cookie header found.\n");
+        else requestCookies.forEach(cookie -> out.append("  ").append(cookie).append('\n'));
+
+        out.append("\nResponse cookies\n");
+        List<String> responseCookies = responseCookies(response);
+        if (responseCookies.isEmpty()) out.append("  No Set-Cookie headers found.\n");
+        else responseCookies.forEach(cookie -> out.append("  ").append(cookie).append('\n'));
+        return out.toString().trim();
+    }
+
+    private static String paramInspectorText(String request) {
+        StringBuilder out = new StringBuilder();
+        List<String> query = queryParams(request);
+        out.append("Query params\n");
+        if (query.isEmpty()) out.append("  No query params found.\n");
+        else query.forEach(param -> out.append("  ").append(param).append('\n'));
+
+        out.append("\nForm params\n");
+        List<String> form = formParams(request);
+        if (form.isEmpty()) out.append("  No URL-encoded form params found.\n");
+        else form.forEach(param -> out.append("  ").append(param).append('\n'));
+        return out.toString().trim();
+    }
+
+    private static String bodyInspectorText(String request, String response) {
+        String requestBody = HttpText.body(request);
+        String responseBody = HttpText.body(response);
+        StringBuilder out = new StringBuilder();
+        out.append("Request body ").append(byteCount(requestBody)).append('\n');
+        out.append(requestBody.isBlank() ? "  Empty\n" : indentPreview(requestBody));
+        out.append("\nResponse body ").append(byteCount(responseBody)).append('\n');
+        out.append(responseBody.isBlank() ? "  Empty\n" : indentPreview(responseBody));
+        return out.toString().trim();
+    }
+
+    private static List<String> messageHeaders(String message) {
+        String headers = HttpText.headers(message).replace("\r\n", "\n").replace('\r', '\n');
+        String[] lines = headers.split("\n", -1);
+        List<String> out = new ArrayList<>();
+        for (int i = 1; i < lines.length; i++) {
+            String line = lines[i].trim();
+            if (line.contains(":")) out.add(line);
+        }
+        return out;
+    }
+
+    private static List<String> requestCookies(String request) {
+        List<String> out = new ArrayList<>();
+        for (String header : messageHeaders(request)) {
+            if (!header.toLowerCase(Locale.ROOT).startsWith("cookie:")) continue;
+            String value = header.substring(header.indexOf(':') + 1).trim();
+            for (String cookie : value.split(";")) {
+                String clean = cookie.trim();
+                if (!clean.isBlank()) out.add(clean);
+            }
+        }
+        return out;
+    }
+
+    private static List<String> responseCookies(String response) {
+        List<String> out = new ArrayList<>();
+        for (String header : messageHeaders(response)) {
+            if (!header.toLowerCase(Locale.ROOT).startsWith("set-cookie:")) continue;
+            String value = header.substring(header.indexOf(':') + 1).trim();
+            if (!value.isBlank()) out.add(value);
+        }
+        return out;
+    }
+
+    private static List<String> queryParams(String request) {
+        String path = requestPath(request);
+        int queryStart = path.indexOf('?');
+        return queryStart < 0 ? List.of() : splitParams(path.substring(queryStart + 1));
+    }
+
+    private static List<String> formParams(String request) {
+        String contentType = headerValue(request, "content-type").toLowerCase(Locale.ROOT);
+        if (!contentType.contains("application/x-www-form-urlencoded")) return List.of();
+        return splitParams(HttpText.body(request));
+    }
+
+    private static List<String> splitParams(String raw) {
+        List<String> out = new ArrayList<>();
+        for (String pair : Objects.toString(raw, "").split("&")) {
+            if (pair.isBlank()) continue;
+            int equals = pair.indexOf('=');
+            String name = equals < 0 ? pair : pair.substring(0, equals);
+            String value = equals < 0 ? "" : pair.substring(equals + 1);
+            out.add(urlDecode(name) + (value.isBlank() ? "" : " = " + urlDecode(value)));
+        }
+        return out;
+    }
+
+    private static String headerValue(String message, String name) {
+        String prefix = name.toLowerCase(Locale.ROOT) + ":";
+        for (String header : messageHeaders(message)) {
+            if (header.toLowerCase(Locale.ROOT).startsWith(prefix)) {
+                return header.substring(header.indexOf(':') + 1).trim();
+            }
+        }
+        return "";
+    }
+
+    private static String requestPath(String request) {
+        String first = firstLine(request);
+        String[] parts = first.split("\\s+");
+        return parts.length > 1 ? parts[1] : "";
+    }
+
+    private static String firstLine(String message) {
+        String normalized = Objects.toString(message, "").replace("\r\n", "\n").replace('\r', '\n');
+        int newline = normalized.indexOf('\n');
+        return (newline < 0 ? normalized : normalized.substring(0, newline)).trim();
+    }
+
+    private static String byteCount(String value) {
+        return Objects.toString(value, "").getBytes(StandardCharsets.UTF_8).length + " bytes";
+    }
+
+    private static String indentPreview(String value) {
+        String preview = Objects.toString(value, "");
+        if (preview.length() > 5000) preview = preview.substring(0, 5000) + "\n... truncated ...";
+        StringBuilder out = new StringBuilder(preview.length() + 32);
+        for (String line : preview.replace("\r\n", "\n").replace('\r', '\n').split("\n", -1)) {
+            out.append("  ").append(line).append('\n');
+        }
+        return out.toString();
+    }
+
+    private static String urlDecode(String value) {
+        try {
+            return URLDecoder.decode(Objects.toString(value, ""), StandardCharsets.UTF_8);
+        } catch (Throwable ignored) {
+            return Objects.toString(value, "");
+        }
+    }
+
+    private static Color mutedBorderColor() {
+        return new Color(82, 86, 92);
+    }
 
     private void toggleRightPane() {
         if (rightPaneVisible) {

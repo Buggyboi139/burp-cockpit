@@ -30,10 +30,24 @@ public final class CockpitState {
 
     public synchronized void pushSnapshot(TrafficSnapshot snapshot) {
         if (snapshot == null) return;
+        if (current != null
+                && historyIndex >= 0
+                && historyIndex < history.size()
+                && current.requestText().equals(snapshot.requestText())
+                && isContextOnly(current.source())
+                && "manual send".equals(snapshot.source())) {
+            history.set(historyIndex, snapshot);
+            current = snapshot;
+            return;
+        }
         while (history.size() > historyIndex + 1) history.remove(history.size() - 1);
         history.add(snapshot);
         historyIndex = history.size() - 1;
         current = snapshot;
+    }
+
+    private static boolean isContextOnly(String source) {
+        return "pre-send".equals(source) || "chat context".equals(source) || "analysis context".equals(source);
     }
 
     public synchronized void resetToCurrentSnapshot(TrafficSnapshot snapshot) {

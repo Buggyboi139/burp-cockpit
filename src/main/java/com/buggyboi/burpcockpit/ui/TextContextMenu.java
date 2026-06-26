@@ -168,11 +168,12 @@ public final class TextContextMenu {
             String foreground = uiColor("Label.foreground", "#d7d7d7");
             StringBuilder html = new StringBuilder(4096);
             html.append("<html><head><style>")
-                    .append("body{font-family:sans-serif;font-size:12px;background:").append(background).append(";color:").append(foreground).append(";margin:6px;}")
-                    .append(".card{border:1px solid #4a4d52;border-left:4px solid #547aa5;margin:0 0 10px 0;padding:10px;background:#25272b;}")
-                    .append(".assistant{border-left-color:#3d9b75;background:#272c2d;}")
+                    .append("body{font-family:sans-serif;font-size:12px;background:").append(background).append(";color:").append(foreground).append(";margin:8px;}")
+                    .append(".card{border:1px solid #4a4d52;border-left:5px solid #547aa5;margin:0 0 12px 0;padding:12px;background:#25272b;}")
+                    .append(".user{border-left-color:#5291cc;background:#252932;}")
+                    .append(".assistant{border-left-color:#3d9b75;background:#242c29;}")
                     .append(".analyze{border-left-color:#c58a24;background:#302c22;}")
-                    .append(".role{color:#b7bbc2;font-weight:bold;margin-bottom:8px;}")
+                    .append(".role{color:#d2d6dd;font-weight:bold;margin-bottom:9px;padding-bottom:5px;border-bottom:1px solid #3d4148;}")
                     .append(".p{margin:0 0 7px 0;}")
                     .append(".h{font-weight:bold;color:#f0f2f5;margin:8px 0 5px 0;}")
                     .append(".li{margin:0 0 4px 12px;}")
@@ -182,7 +183,7 @@ public final class TextContextMenu {
                     .append("a{color:#80bfff;}")
                     .append("</style></head><body>");
             for (ChatCard card : cards) {
-                String kind = card.analysis() ? "card analyze" : "Assistant".equals(card.role()) ? "card assistant" : "card";
+                String kind = card.analysis() ? "card analyze" : "Assistant".equals(card.role()) ? "card assistant" : "card user";
                 html.append("<div class='").append(kind).append("'>");
                 html.append("<div class='role'>").append(escape(card.role())).append(" | ").append(escape(card.timestamp().toString())).append("</div>");
                 html.append(markdownToHtml(card.content()));

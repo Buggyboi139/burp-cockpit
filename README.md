@@ -32,8 +32,19 @@ Burp Cockpit is a Burp Suite Community/Professional Montoya extension that ports
 Toolbar:
 
 ```text
-[New] [←] [→] [Send] [Refresh Cookies] [Clear Cache] [Export curl] [Export Python] [Hide Right Pane] [Settings]
-Tokens [1k|2k|20k|96k] [Thinking] [Delta only] [RAG]
+Navigate [New] [←] [→]
+Traffic [Send] [Cookies] [Clear Cache]
+Export [curl] [Python]
+View [Hide Panel] [Settings]
+AI Context Tokens [1k|2k|20k|96k] [Thinking] [Delta only] [RAG]
+```
+
+Traffic view:
+
+```text
+Request search + native request editor + request summary
+Response search + native response editor + response summary
+Inspector tabs: [Headers] [Cookies] [Params] [Body]
 ```
 
 Analysis tab:
@@ -42,7 +53,7 @@ Analysis tab:
 Mode/context badge
 HTML card transcript
 Prompt box
-[Notes] [RAG] [Send Chat] [Analyze] [Stop] [Clear Chat]
+[Notes] [RAG] [Send Chat] [Analyze] [Stop] [Clear]
 ```
 
 Notes tab:
