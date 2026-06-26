@@ -181,9 +181,7 @@ public final class CockpitPanel extends JPanel {
         if (editor instanceof JTextField textField) TextContextMenu.install(textField);
         noteSelector.addActionListener(e -> {
             if (suppressNoteEvents) return;
-            Object item = noteSelector.getEditor().getItem();
-            if (item == null) item = noteSelector.getSelectedItem();
-            String name = NotesStore.sanitizeName(Objects.toString(item, ""));
+            String name = selectedComboNoteName();
             if (!name.isBlank()) noteNameField.setText(name);
         });
 
@@ -932,14 +930,22 @@ public final class CockpitPanel extends JPanel {
     }
 
     private String selectedComboNoteName() {
+        String selected = cleanOptionalNoteName(noteSelector.getSelectedItem());
         Component editor = noteSelector.getEditor().getEditorComponent();
         if (editor instanceof JTextField textField) {
             String typed = cleanOptionalNoteName(textField.getText());
-            if (!typed.isBlank()) return typed;
+            if (!typed.isBlank()) {
+                String active = noteSaveSourceName();
+                if (!selected.isBlank() && typed.equals(active) && !selected.equals(active)) {
+                    return selected;
+                }
+                return typed;
+            }
         }
-        Object selected = noteSelector.getEditor().getItem();
-        if (selected == null) selected = noteSelector.getSelectedItem();
-        return cleanOptionalNoteName(selected);
+        Object editorItemValue = noteSelector.getEditor().getItem();
+        String editorItem = cleanOptionalNoteName(editorItemValue);
+        if (!editorItem.isBlank()) return editorItem;
+        return selected;
     }
 
     private static String cleanOptionalNoteName(Object value) {
