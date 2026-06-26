@@ -151,6 +151,7 @@ public final class CockpitPanel extends JPanel {
         this.ragCheck = new JCheckBox("RAG", false);
         settings.injectRag(false);
         configureControls();
+        TextContextMenu.selectionActions(new TextContextMenu.SelectionActions(this::summarizeSelectionForNotes, this::sendSelectionToNotes));
         buildUi();
         applySettingsToControls();
         refreshNoteList();
@@ -888,6 +889,50 @@ public final class CockpitPanel extends JPanel {
     private void runChatFromUi() { runAi(false); }
     private void runAnalysisFromUi() { runAi(true); }
 
+    void summarizeSelectionForNotes(String selectedText) {
+        String selection = Objects.toString(selectedText, "").trim();
+        if (selection.isBlank()) {
+            setStatus("No selected text to summarize for notes.");
+            return;
+        }
+        if (currentAiThread != null && currentAiThread.isAlive()) {
+            setChatStatus("AI is already working. Stop it first.");
+            return;
+        }
+        promptArea.setText(noteSummaryInstruction(selection));
+        runChatFromUi();
+        promptArea.setText("");
+    }
+
+    void sendSelectionToNotes(String selectedText) {
+        String selection = Objects.toString(selectedText, "").trim();
+        if (selection.isBlank()) {
+            setStatus("No selected text to send to notes.");
+            return;
+        }
+        try {
+            String noteName = ensureNoteForAppend();
+            appendToNotes(selectionClipMarkdown(selection));
+            if (noteSaveTimer != null) noteSaveTimer.stop();
+            notesStore.write(noteName, notesArea.getText());
+            refreshNoteList();
+            selectNote(noteName);
+            updateContextCounter();
+            setStatus("Sent selected text to note: " + noteName);
+        } catch (Throwable throwable) {
+            showError("Failed to send selection to notes", throwable);
+        }
+    }
+
+    private String noteSummaryInstruction(String selection) {
+        String clipped = PromptBuilder.firstTokens(selection, settings.chatNotesTokens());
+        return "Clean this selected Cockpit text into concise Markdown suitable for appending to my active notes.\n"
+                + "Preserve exact evidence, endpoints, parameters, IDs, errors, timestamps, and security-relevant values.\n"
+                + "Remove noise and repetition. Do not invent facts. Output only note-ready Markdown, no preamble.\n\n"
+                + "Selected text:\n"
+                + fencedBlock("text", clipped);
+    }
+
     private void runAi(boolean analysis) {
         syncSettingsFromControls();
         syncSnapshotFromEditors(analysis ? "analysis context" : "chat context");
@@ -1034,6 +1079,40 @@ public final class CockpitPanel extends JPanel {
 
     private String activeNoteContent() {
         return activeNoteName.isBlank() ? "" : notesArea.getText();
+    }
+
+    private String ensureNoteForAppend() {
+        flushPendingNoteSave();
+        String noteName = noteSaveSourceName();
+        if (noteName.isBlank()) noteName = currentNoteName();
+        if (noteName.isBlank()) noteName = "DEFAULT";
+        noteName = notesStore.ensureNote(noteName);
+        if (activeNoteName.isBlank() && notesArea.getText().isBlank() && notesStore.exists(noteName)) {
+            setNoteText(notesStore.read(noteName));
+        }
+        activeNoteName = noteName;
+        selectNote(noteName);
+        return noteName;
+    }
+
+    private void appendToNotes(String markdown) {
+        String current = notesArea.getText();
+        String separator = current.isBlank() || current.endsWith("\n\n") ? "" : current.endsWith("\n") ? "\n" : "\n\n";
+        notesArea.append(separator + markdown);
+        notesArea.setCaretPosition(notesArea.getDocument().getLength());
+    }
+
+    private static String selectionClipMarkdown(String selection) {
+        return "## Selection Clip\n\n"
+                + "Captured: " + Instant.now() + "\n\n"
+                + fencedBlock("text", selection);
+    }
+
+    private static String fencedBlock(String language, String value) {
+        String text = Objects.toString(value, "");
+        String fence = "```";
+        while (text.contains(fence)) fence += "`";
+        return fence + Objects.toString(language, "") + "\n" + text + "\n" + fence + "\n";
     }
 
     private void stopCurrentAiWorker() {

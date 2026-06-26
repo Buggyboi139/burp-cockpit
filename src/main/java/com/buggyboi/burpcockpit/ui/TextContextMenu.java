@@ -22,9 +22,16 @@ import java.time.Instant;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Objects;
+import java.util.function.Consumer;
 
 public final class TextContextMenu {
+    private static volatile SelectionActions selectionActions = SelectionActions.none();
+
     private TextContextMenu() {}
+
+    public static void selectionActions(SelectionActions actions) {
+        selectionActions = actions == null ? SelectionActions.none() : actions;
+    }
 
     public static void install(JTextComponent component) {
         if (component == null) return;
@@ -46,11 +53,22 @@ public final class TextContextMenu {
                 paste.setEnabled(component.isEditable() && component.isEnabled());
                 JMenuItem selectAll = new JMenuItem("Select all");
                 selectAll.addActionListener(e -> component.selectAll());
+                String selectedText = Objects.toString(component.getSelectedText(), "");
+                SelectionActions actions = selectionActions;
                 menu.add(cut);
                 menu.add(copy);
                 menu.add(paste);
                 menu.addSeparator();
                 menu.add(selectAll);
+                if (!selectedText.isBlank() && actions.enabled()) {
+                    JMenuItem summarizeForNotes = new JMenuItem("Summarize for notes");
+                    summarizeForNotes.addActionListener(e -> actions.summarizeForNotes().accept(selectedText));
+                    JMenuItem sendToNotes = new JMenuItem("Send to notes");
+                    sendToNotes.addActionListener(e -> actions.sendToNotes().accept(selectedText));
+                    menu.addSeparator();
+                    menu.add(summarizeForNotes);
+                    menu.add(sendToNotes);
+                }
                 menu.show(event.getComponent(), event.getX(), event.getY());
             }
         });
@@ -94,6 +112,16 @@ public final class TextContextMenu {
 
     private static boolean isResponseViewer(int rows, int cols, boolean editable) {
         return !editable && rows == 12 && cols == 90;
+    }
+
+    public record SelectionActions(Consumer<String> summarizeForNotes, Consumer<String> sendToNotes) {
+        public static SelectionActions none() {
+            return new SelectionActions(null, null);
+        }
+
+        public boolean enabled() {
+            return summarizeForNotes != null && sendToNotes != null;
+        }
     }
 
     public static final class ChatTranscriptPane extends JEditorPane {
