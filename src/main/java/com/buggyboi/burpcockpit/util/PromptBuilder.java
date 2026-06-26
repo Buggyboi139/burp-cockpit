@@ -54,7 +54,7 @@ public final class PromptBuilder {
         prompt.append("Do not write notes. Notes and RAG, if present, are read-only reference material.\n\n");
         appendAnalyzeContext(prompt, state, pinnedNote, ragDump);
         prompt.append("\nUser instruction:\n").append(blankDefault(userInstruction, "Analyze this exchange."));
-        prompt.append("\n\nOutput format, plain text only:\n");
+        prompt.append("\n\nOutput format, compact Markdown:\n");
         prompt.append("Immediate tests\n");
         prompt.append("- one concrete mutation per line\n\n");
         prompt.append("Evidence\n");
@@ -153,8 +153,8 @@ public final class PromptBuilder {
 
     private static void appendLayoutRules(StringBuilder prompt) {
         prompt.append("Final answer layout rules:\n");
-        prompt.append("Use plain text only. No Markdown emphasis. No tables. No giant paragraphs.\n");
-        prompt.append("Put every heading on its own line. Put every bullet on its own line using '- '.\n");
+        prompt.append("Use compact Markdown. Use headings, short bullets, and fenced code blocks for exact HTTP, JSON, shell, or payload text.\n");
+        prompt.append("No tables unless the user specifically asks. No giant paragraphs.\n");
         prompt.append("Leave a blank line between sections. Keep each bullet short and operational.\n\n");
     }
 

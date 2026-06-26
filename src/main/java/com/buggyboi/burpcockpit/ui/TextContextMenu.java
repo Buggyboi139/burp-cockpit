@@ -3,31 +3,24 @@ package com.buggyboi.burpcockpit.ui;
 import javax.swing.AbstractAction;
 import javax.swing.JButton;
 import javax.swing.JEditorPane;
-import javax.swing.JLabel;
 import javax.swing.JMenuItem;
 import javax.swing.JPopupMenu;
 import javax.swing.JTextArea;
 import javax.swing.JTextField;
-import javax.swing.JToolBar;
 import javax.swing.KeyStroke;
 import javax.swing.SwingUtilities;
+import javax.swing.UIManager;
 import javax.swing.text.JTextComponent;
+import java.awt.Color;
 import java.awt.Component;
 import java.awt.Container;
 import java.awt.Dimension;
 import java.awt.event.ActionEvent;
 import java.awt.event.MouseAdapter;
 import java.awt.event.MouseEvent;
-import java.lang.reflect.Array;
-import java.lang.reflect.Field;
-import java.lang.reflect.Method;
-import java.net.URI;
 import java.time.Instant;
 import java.util.ArrayList;
-import java.util.LinkedHashMap;
 import java.util.List;
-import java.util.Locale;
-import java.util.Map;
 import java.util.Objects;
 
 public final class TextContextMenu {
@@ -67,13 +60,11 @@ public final class TextContextMenu {
         JTextArea area;
         if (isPromptInput(rows, cols, editable)) {
             area = new PromptArea(rows, cols);
-        } else if (isRequestEditor(rows, cols, editable)) {
-            area = new RequestEditorArea(rows, cols);
         } else {
             area = new JTextArea(rows, cols);
         }
         area.setEditable(editable);
-        boolean visualWrap = isRequestEditor(rows, cols, editable) || isResponseViewer(rows, cols, editable);
+        boolean visualWrap = isResponseViewer(rows, cols, editable);
         area.setLineWrap(visualWrap);
         area.setWrapStyleWord(visualWrap);
         install(area);
@@ -99,10 +90,6 @@ public final class TextContextMenu {
 
     private static boolean isPromptInput(int rows, int cols, boolean editable) {
         return editable && rows == 4 && cols == 70;
-    }
-
-    private static boolean isRequestEditor(int rows, int cols, boolean editable) {
-        return editable && rows == 24 && cols == 90;
     }
 
     private static boolean isResponseViewer(int rows, int cols, boolean editable) {
@@ -177,15 +164,22 @@ public final class TextContextMenu {
         }
 
         private void render() {
+            String background = uiColor("Panel.background", "#202124");
+            String foreground = uiColor("Label.foreground", "#d7d7d7");
             StringBuilder html = new StringBuilder(4096);
             html.append("<html><head><style>")
-                    .append("body{font-family:sans-serif;font-size:12px;background:#1f1f1f;color:#d7d7d7;margin:6px;}")
-                    .append(".card{border:1px solid #444;margin:0 0 10px 0;padding:10px;background:#2b2b2b;}")
-                    .append(".assistant{background:#303336;}")
-                    .append(".analyze{border-color:#806000;background:#343024;}")
-                    .append(".role{color:#afb1b3;font-weight:bold;margin-bottom:6px;}")
-                    .append("pre{background:#1b1b1b;border:1px solid #3d3d3d;padding:6px;white-space:pre-wrap;}")
-                    .append("code{font-family:monospaced;}")
+                    .append("body{font-family:sans-serif;font-size:12px;background:").append(background).append(";color:").append(foreground).append(";margin:6px;}")
+                    .append(".card{border:1px solid #4a4d52;border-left:4px solid #547aa5;margin:0 0 10px 0;padding:10px;background:#25272b;}")
+                    .append(".assistant{border-left-color:#3d9b75;background:#272c2d;}")
+                    .append(".analyze{border-left-color:#c58a24;background:#302c22;}")
+                    .append(".role{color:#b7bbc2;font-weight:bold;margin-bottom:8px;}")
+                    .append(".p{margin:0 0 7px 0;}")
+                    .append(".h{font-weight:bold;color:#f0f2f5;margin:8px 0 5px 0;}")
+                    .append(".li{margin:0 0 4px 12px;}")
+                    .append(".quote{border-left:3px solid #6b7280;margin:6px 0;padding:2px 0 2px 8px;color:#c9ccd2;}")
+                    .append("pre{background:#17191c;border:1px solid #3d4148;padding:8px;white-space:pre-wrap;margin:6px 0 8px 0;}")
+                    .append("code{font-family:monospaced;background:#1b1e22;padding:1px 3px;}")
+                    .append("a{color:#80bfff;}")
                     .append("</style></head><body>");
             for (ChatCard card : cards) {
                 String kind = card.analysis() ? "card analyze" : "Assistant".equals(card.role()) ? "card assistant" : "card";
@@ -220,13 +214,17 @@ public final class TextContextMenu {
                 if (inFence) {
                     out.append(escape(raw)).append("\n");
                 } else if (line.isBlank()) {
-                    out.append("<br>");
+                    out.append("<div class='p'>&nbsp;</div>");
                 } else if (line.startsWith("#")) {
-                    out.append("<b>").append(escape(line.replaceFirst("^#{1,6}\\s*", ""))).append("</b><br>");
+                    out.append("<div class='h'>").append(inlineMarkdown(line.replaceFirst("^#{1,6}\\s*", ""))).append("</div>");
                 } else if (line.startsWith("- ") || line.startsWith("* ")) {
-                    out.append("&#8226; ").append(inlineMarkdown(line.substring(2))).append("<br>");
+                    out.append("<div class='li'>&bull; ").append(inlineMarkdown(line.substring(2))).append("</div>");
+                } else if (line.matches("^\\d+[.)]\\s+.*")) {
+                    out.append("<div class='li'>").append(inlineMarkdown(line)).append("</div>");
+                } else if (line.startsWith(">")) {
+                    out.append("<div class='quote'>").append(inlineMarkdown(line.replaceFirst("^>\\s?", ""))).append("</div>");
                 } else {
-                    out.append(inlineMarkdown(raw)).append("<br>");
+                    out.append("<div class='p'>").append(inlineMarkdown(raw)).append("</div>");
                 }
             }
             if (inFence) out.append("</code></pre>");
@@ -239,6 +237,7 @@ public final class TextContextMenu {
             escaped = escaped.replaceAll("\\*\\*([^*]+)\\*\\*", "<b>$1</b>");
             escaped = escaped.replaceAll("__([^_]+)__", "<b>$1</b>");
             escaped = escaped.replaceAll("(?<!\\*)\\*([^*]+)\\*(?!\\*)", "<i>$1</i>");
+            escaped = escaped.replaceAll("\\[([^\\]]+)]\\((https?://[^\\s)]+|mailto:[^\\s)]+)\\)", "<a href='$2'>$1</a>");
             return escaped;
         }
 
@@ -249,215 +248,15 @@ public final class TextContextMenu {
                     .replace(">", "&gt;")
                     .replace("\"", "&quot;");
         }
+
+        private static String uiColor(String key, String fallback) {
+            Color color = UIManager.getColor(key);
+            if (color == null) return fallback;
+            return "#" + String.format("%02x%02x%02x", color.getRed(), color.getGreen(), color.getBlue());
+        }
     }
 
     private record ChatCard(String role, String content, boolean analysis, Instant timestamp) {}
-
-    private static final class RequestEditorArea extends JTextArea {
-        private static final String REFRESH_COOKIES_BUTTON_NAME = "burp-cockpit-refresh-cookies";
-        private boolean refreshButtonInstalled;
-
-        private RequestEditorArea(int rows, int cols) {
-            super(rows, cols);
-        }
-
-        @Override public void addNotify() {
-            super.addNotify();
-            SwingUtilities.invokeLater(this::installRefreshCookiesButton);
-        }
-
-        private void installRefreshCookiesButton() {
-            if (refreshButtonInstalled) return;
-            Container root = rootContainer(this);
-            if (root == null) return;
-            JButton send = findButtonRecursive(root, "Send");
-            if (send == null || !(send.getParent() instanceof JToolBar toolbar)) return;
-            for (Component component : toolbar.getComponents()) {
-                if (REFRESH_COOKIES_BUTTON_NAME.equals(component.getName())) {
-                    refreshButtonInstalled = true;
-                    return;
-                }
-            }
-            JButton refresh = new JButton("Refresh Cookies");
-            refresh.setName(REFRESH_COOKIES_BUTTON_NAME);
-            refresh.addActionListener(e -> refreshCookiesFromBurp());
-            toolbar.add(refresh, Math.max(0, toolbar.getComponentIndex(send) + 1));
-            toolbar.revalidate();
-            toolbar.repaint();
-            refreshButtonInstalled = true;
-        }
-
-        private void refreshCookiesFromBurp() {
-            try {
-                RequestTarget target = RequestTarget.from(getText());
-                if (target.host().isBlank()) {
-                    setCockpitStatus("Refresh Cookies failed: request has no Host header.");
-                    return;
-                }
-                Object api = fieldValue(cockpitPanel(this), "api");
-                List<Object> cookies = readBurpCookies(api, target.url());
-                Map<String, String> matched = new LinkedHashMap<>();
-                for (Object cookie : cookies) {
-                    CookieView view = CookieView.from(cookie);
-                    if (view.matches(target)) matched.put(view.name(), view.value());
-                }
-                if (matched.isEmpty()) {
-                    setCockpitStatus("Refresh Cookies found no matching Burp cookie jar cookies for " + target.host() + target.path() + ".");
-                    return;
-                }
-                StringBuilder header = new StringBuilder();
-                for (Map.Entry<String, String> entry : matched.entrySet()) {
-                    if (!header.isEmpty()) header.append("; ");
-                    header.append(entry.getKey()).append('=').append(entry.getValue());
-                }
-                setText(withCookieHeader(getText(), header.toString()));
-                setCaretPosition(0);
-                setCockpitStatus("Refreshed " + matched.size() + " cookie(s) from Burp cookie jar for " + target.host() + ".");
-            } catch (Throwable throwable) {
-                setCockpitStatus("Refresh Cookies failed: " + throwable.getClass().getSimpleName() + ": " + Objects.toString(throwable.getMessage(), "no detail"));
-            }
-        }
-
-        private void setCockpitStatus(String message) {
-            Object label = fieldValue(cockpitPanel(this), "statusLabel");
-            if (label instanceof JLabel jLabel) jLabel.setText(message);
-        }
-
-        private static List<Object> readBurpCookies(Object api, String url) throws Exception {
-            Object http = invokeNoArg(api, "http");
-            Object jar = invokeNoArg(http, "cookieJar");
-            Object result = null;
-            for (String method : List.of("cookies", "getCookies")) {
-                result = tryInvokeNoArg(jar, method);
-                if (result != null) break;
-                result = tryInvokeOneString(jar, method, url);
-                if (result != null) break;
-            }
-            if (result == null) throw new IllegalStateException("Montoya cookie jar did not expose cookies()/getCookies().");
-            List<Object> out = new ArrayList<>();
-            if (result instanceof Iterable<?> iterable) {
-                for (Object item : iterable) out.add(item);
-                return out;
-            }
-            if (result.getClass().isArray()) {
-                for (int i = 0; i < Array.getLength(result); i++) out.add(Array.get(result, i));
-                return out;
-            }
-            throw new IllegalStateException("Montoya cookie jar returned unsupported type: " + result.getClass().getName());
-        }
-
-        private static String withCookieHeader(String rawRequest, String cookieHeader) {
-            String raw = Objects.toString(rawRequest, "");
-            String newline = raw.contains("\r\n") ? "\r\n" : "\n";
-            String normalized = raw.replace("\r\n", "\n").replace('\r', '\n');
-            int split = normalized.indexOf("\n\n");
-            String headers = split >= 0 ? normalized.substring(0, split) : normalized;
-            String body = split >= 0 ? normalized.substring(split + 2) : "";
-            String[] lines = headers.split("\n", -1);
-            List<String> out = new ArrayList<>();
-            boolean replaced = false;
-            boolean inserted = false;
-            for (int i = 0; i < lines.length; i++) {
-                String line = lines[i];
-                if (line.toLowerCase(Locale.ROOT).startsWith("cookie:")) {
-                    if (!replaced) {
-                        out.add("Cookie: " + cookieHeader);
-                        replaced = true;
-                    }
-                    continue;
-                }
-                out.add(line);
-                if (!replaced && !inserted && i > 0 && line.toLowerCase(Locale.ROOT).startsWith("host:")) {
-                    out.add("Cookie: " + cookieHeader);
-                    inserted = true;
-                }
-            }
-            if (!replaced && !inserted) out.add(Math.min(1, out.size()), "Cookie: " + cookieHeader);
-            return String.join(newline, out) + newline + newline + body.replace("\n", newline);
-        }
-    }
-
-    private record RequestTarget(String scheme, String host, String path) {
-        String url() { return scheme + "://" + host + path; }
-
-        static RequestTarget from(String rawRequest) {
-            String text = Objects.toString(rawRequest, "").replace("\r\n", "\n").replace('\r', '\n');
-            String[] lines = text.split("\n");
-            String first = lines.length > 0 ? lines[0] : "";
-            String host = "";
-            String path = "/";
-            String scheme = "https";
-            for (String line : lines) {
-                String lower = line.toLowerCase(Locale.ROOT);
-                if (lower.startsWith("host:")) host = line.substring(line.indexOf(':') + 1).trim();
-                else if (lower.startsWith("origin: http://") || lower.startsWith("referer: http://")) scheme = "http";
-            }
-            String[] parts = first.split("\\s+");
-            if (parts.length > 1) {
-                path = parts[1].trim();
-                if (path.startsWith("http://") || path.startsWith("https://")) {
-                    try {
-                        URI uri = URI.create(path);
-                        scheme = uri.getScheme() == null ? scheme : uri.getScheme();
-                        host = uri.getHost() == null ? host : uri.getHost();
-                        if (uri.getPort() > 0) host = host + ":" + uri.getPort();
-                        path = uri.getRawPath() == null || uri.getRawPath().isBlank() ? "/" : uri.getRawPath();
-                        if (uri.getRawQuery() != null) path += "?" + uri.getRawQuery();
-                    } catch (Throwable ignored) {
-                        path = "/";
-                    }
-                }
-            }
-            return new RequestTarget(scheme, host, path.isBlank() ? "/" : path);
-        }
-    }
-
-    private record CookieView(String name, String value, String domain, String path, boolean secure) {
-        boolean matches(RequestTarget target) {
-            if (name.isBlank()) return false;
-            String targetHost = stripPort(target.host()).toLowerCase(Locale.ROOT);
-            String cookieDomain = domain.toLowerCase(Locale.ROOT);
-            if (cookieDomain.startsWith(".")) cookieDomain = cookieDomain.substring(1);
-            boolean domainOk = cookieDomain.isBlank() || targetHost.equals(cookieDomain) || targetHost.endsWith("." + cookieDomain);
-            boolean pathOk = path.isBlank() || target.path().startsWith(path);
-            boolean secureOk = !secure || "https".equalsIgnoreCase(target.scheme());
-            return domainOk && pathOk && secureOk;
-        }
-
-        static CookieView from(Object cookie) {
-            return new CookieView(
-                    str(cookie, "name", "getName"),
-                    str(cookie, "value", "getValue"),
-                    str(cookie, "domain", "getDomain"),
-                    str(cookie, "path", "getPath"),
-                    bool(cookie, "secure", "isSecure", "getSecure")
-            );
-        }
-
-        private static String stripPort(String host) {
-            String value = Objects.toString(host, "").trim();
-            int colon = value.lastIndexOf(':');
-            return colon > 0 && value.indexOf(']') < colon ? value.substring(0, colon) : value;
-        }
-
-        private static String str(Object target, String... names) {
-            for (String name : names) {
-                try { return Objects.toString(invokeNoArg(target, name), ""); }
-                catch (Throwable ignored) { }
-            }
-            return "";
-        }
-
-        private static boolean bool(Object target, String... names) {
-            for (String name : names) {
-                try {
-                    Object value = invokeNoArg(target, name);
-                    return value instanceof Boolean b ? b : Boolean.parseBoolean(Objects.toString(value, "false"));
-                } catch (Throwable ignored) { }
-            }
-            return false;
-        }
-    }
 
     private static final class PromptArea extends JTextArea {
         private String submittedPrompt = "";
@@ -539,56 +338,6 @@ public final class TextContextMenu {
                 finally { autoClearing = false; }
             });
         }
-    }
-
-    private static Object cockpitPanel(Component start) {
-        Component current = start;
-        while (current != null) {
-            if ("com.buggyboi.burpcockpit.ui.CockpitPanel".equals(current.getClass().getName())) return current;
-            current = current.getParent();
-        }
-        throw new IllegalStateException("Could not find CockpitPanel root.");
-    }
-
-    private static Object fieldValue(Object target, String fieldName) {
-        if (target == null) return null;
-        Class<?> type = target.getClass();
-        while (type != null) {
-            try {
-                Field field = type.getDeclaredField(fieldName);
-                field.setAccessible(true);
-                return field.get(target);
-            } catch (NoSuchFieldException ignored) {
-                type = type.getSuperclass();
-            } catch (Throwable throwable) {
-                return null;
-            }
-        }
-        return null;
-    }
-
-    private static Object invokeNoArg(Object target, String name) throws Exception {
-        Method method = target.getClass().getMethod(name);
-        method.setAccessible(true);
-        return method.invoke(target);
-    }
-
-    private static Object tryInvokeNoArg(Object target, String name) {
-        try { return invokeNoArg(target, name); }
-        catch (Throwable ignored) { return null; }
-    }
-
-    private static Object tryInvokeOneString(Object target, String name, String arg) {
-        for (Method method : target.getClass().getMethods()) {
-            if (!method.getName().equals(name) || method.getParameterCount() != 1 || !method.getParameterTypes()[0].equals(String.class)) continue;
-            try {
-                method.setAccessible(true);
-                return method.invoke(target, arg);
-            } catch (Throwable ignored) {
-                return null;
-            }
-        }
-        return null;
     }
 
     private static Container rootContainer(Component start) {

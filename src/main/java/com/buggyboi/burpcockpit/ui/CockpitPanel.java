@@ -5,6 +5,9 @@ import burp.api.montoya.http.HttpService;
 import burp.api.montoya.http.message.HttpRequestResponse;
 import burp.api.montoya.http.message.requests.HttpRequest;
 import burp.api.montoya.http.message.responses.HttpResponse;
+import burp.api.montoya.ui.editor.EditorOptions;
+import burp.api.montoya.ui.editor.HttpRequestEditor;
+import burp.api.montoya.ui.editor.HttpResponseEditor;
 import com.buggyboi.burpcockpit.lumara.LumaraClient;
 import com.buggyboi.burpcockpit.notes.NotesStore;
 import com.buggyboi.burpcockpit.state.CockpitSettings;
@@ -38,13 +41,21 @@ import java.awt.GridBagLayout;
 import java.awt.Insets;
 import java.awt.Toolkit;
 import java.awt.datatransfer.StringSelection;
+import java.lang.reflect.Array;
+import java.lang.reflect.Method;
+import java.net.URI;
 import java.time.Instant;
+import java.util.ArrayList;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Locale;
+import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
 import java.util.concurrent.atomic.AtomicBoolean;
 
 import static burp.api.montoya.http.message.requests.HttpRequest.httpRequest;
+import static burp.api.montoya.http.message.responses.HttpResponse.httpResponse;
 
 public final class CockpitPanel extends JPanel {
     private static final Dimension TOKEN_SELECTOR_SIZE = new Dimension(58, 24);
@@ -57,8 +68,8 @@ public final class CockpitPanel extends JPanel {
     private final NotesStore notesStore;
     private final LumaraClient lumaraClient;
 
-    private final JTextArea requestArea = TextContextMenu.area(24, 90, true);
-    private final JTextArea responseArea = TextContextMenu.area(12, 90, false);
+    private final HttpRequestEditor requestEditor;
+    private final HttpResponseEditor responseEditor;
     private final TextContextMenu.ChatTranscriptPane transcriptArea = TextContextMenu.transcript(24, 70);
     private final JTextArea promptArea = TextContextMenu.area(4, 70, true);
     private final JTextArea notesArea = TextContextMenu.area(24, 70, true);
@@ -91,6 +102,8 @@ public final class CockpitPanel extends JPanel {
     private int busyTick;
     private boolean suppressNoteEvents;
     private String activeNoteName = "";
+    private String requestTextCache = "";
+    private String responseTextCache = "";
 
     public CockpitPanel(MontoyaApi api, CockpitState state, LumaraClient lumaraClient) {
         super(new BorderLayout());
@@ -99,6 +112,8 @@ public final class CockpitPanel extends JPanel {
         this.settings = state.settings();
         this.notesStore = state.notesStore();
         this.lumaraClient = lumaraClient;
+        this.requestEditor = api.userInterface().createHttpRequestEditor(EditorOptions.WRAP_LINES);
+        this.responseEditor = api.userInterface().createHttpResponseEditor(EditorOptions.READ_ONLY, EditorOptions.WRAP_LINES);
         this.chatEndpointField = TextContextMenu.field(settings.chatEndpoint());
         this.modelField = TextContextMenu.field(settings.model());
         this.ragEndpointField = TextContextMenu.field(settings.ragSearchEndpoint());
@@ -175,7 +190,10 @@ public final class CockpitPanel extends JPanel {
         setPreferredSize(new Dimension(1300, 880));
         add(buildToolbar(), BorderLayout.NORTH);
 
-        JSplitPane left = new JSplitPane(JSplitPane.VERTICAL_SPLIT, wrap("Request", requestArea), wrap("Response from last sent or opened exchange", responseArea));
+        JSplitPane left = new JSplitPane(
+                JSplitPane.VERTICAL_SPLIT,
+                frame("Request", requestEditor.uiComponent()),
+                frame("Response from last sent or opened exchange", responseEditor.uiComponent()));
         left.setResizeWeight(0.68);
 
         rightTabs = new JTabbedPane();
@@ -213,6 +231,10 @@ public final class CockpitPanel extends JPanel {
         JButton send = new JButton("Send");
         send.addActionListener(e -> sendCurrentRequest());
         bar.add(send);
+
+        JButton refreshCookies = new JButton("Refresh Cookies");
+        refreshCookies.addActionListener(e -> refreshCookiesFromBurp());
+        bar.add(refreshCookies);
 
         JButton clearCache = new JButton("Clear Cache");
         clearCache.addActionListener(e -> clearContextCache());
@@ -329,6 +351,13 @@ public final class CockpitPanel extends JPanel {
         return scroll;
     }
 
+    private JPanel frame(String title, Component component) {
+        JPanel panel = new JPanel(new BorderLayout());
+        panel.setBorder(BorderFactory.createTitledBorder(title));
+        panel.add(component, BorderLayout.CENTER);
+        return panel;
+    }
+
     private void applySettingsToControls() {
         selectToken(settings.tokenBudget());
         thinkingCheck.addActionListener(e -> settings.includeThinking(thinkingCheck.isSelected()));
@@ -350,19 +379,73 @@ public final class CockpitPanel extends JPanel {
     }
 
     private void loadSnapshotWithoutPush(TrafficSnapshot snapshot) {
-        requestArea.setText(snapshot.requestText());
-        requestArea.setCaretPosition(0);
-        responseArea.setText(snapshot.responseText());
-        responseArea.setCaretPosition(0);
+        setRequestEditorText(snapshot.requestText(), snapshot.service());
+        setResponseEditorText(snapshot.responseText());
         historyLabel.setText(state.historyLabel());
         setStatus("Loaded " + HttpText.shortSummary(snapshot.requestText(), snapshot.service()));
         updateContextCounter();
     }
 
+    private void setRequestEditorText(String rawRequest, HttpService service) {
+        requestTextCache = Objects.toString(rawRequest, "");
+        try {
+            HttpRequest request = service == null ? httpRequest(requestTextCache) : httpRequest(service, requestTextCache);
+            requestEditor.setRequest(request);
+            requestEditor.setCaretPosition(0);
+        } catch (Throwable throwable) {
+            api.logging().logToError("Burp Cockpit failed to load request editor", throwable);
+        }
+    }
+
+    private void setResponseEditorText(String rawResponse) {
+        responseTextCache = Objects.toString(rawResponse, "");
+        try {
+            responseEditor.setResponse(responseTextCache.isBlank() ? httpResponse() : httpResponse(responseTextCache));
+            responseEditor.setCaretPosition(0);
+        } catch (Throwable throwable) {
+            api.logging().logToError("Burp Cockpit failed to load response editor", throwable);
+        }
+    }
+
+    private String requestText() {
+        try {
+            HttpRequest request = requestEditor.getRequest();
+            if (request != null) {
+                requestTextCache = request.toString();
+            }
+        } catch (Throwable throwable) {
+            api.logging().logToError("Burp Cockpit failed to read request editor", throwable);
+        }
+        return requestTextCache;
+    }
+
+    private String responseText() {
+        try {
+            HttpResponse response = responseEditor.getResponse();
+            if (response != null) {
+                responseTextCache = response.toString();
+            }
+        } catch (Throwable throwable) {
+            api.logging().logToError("Burp Cockpit failed to read response editor", throwable);
+        }
+        return responseTextCache;
+    }
+
+    private Optional<HttpService> editorService() {
+        try {
+            HttpRequest request = requestEditor.getRequest();
+            return request == null ? Optional.empty() : Optional.ofNullable(request.httpService());
+        } catch (Throwable ignored) {
+            return Optional.empty();
+        }
+    }
+
     private void syncSnapshotFromEditors(String source) {
         HttpService service = state.currentService();
-        if (service == null) service = HttpText.inferService(requestArea.getText(), true).orElse(null);
-        TrafficSnapshot snapshot = new TrafficSnapshot(service, requestArea.getText(), responseArea.getText(), Instant.now(), source);
+        String requestText = requestText();
+        if (service == null) service = editorService().orElse(null);
+        if (service == null) service = HttpText.inferService(requestText, true).orElse(null);
+        TrafficSnapshot snapshot = new TrafficSnapshot(service, requestText, responseText(), Instant.now(), source);
         state.pushSnapshot(snapshot);
         historyLabel.setText(state.historyLabel());
         updateContextCounter();
@@ -373,8 +456,10 @@ public final class CockpitPanel extends JPanel {
         stopBusyIndicator();
         lastRagDump = "";
         HttpService service = state.currentService();
-        if (service == null) service = HttpText.inferService(requestArea.getText(), true).orElse(null);
-        TrafficSnapshot snapshot = new TrafficSnapshot(service, requestArea.getText(), responseArea.getText(), Instant.now(), "cache reset");
+        String requestText = requestText();
+        if (service == null) service = editorService().orElse(null);
+        if (service == null) service = HttpText.inferService(requestText, true).orElse(null);
+        TrafficSnapshot snapshot = new TrafficSnapshot(service, requestText, responseText(), Instant.now(), "cache reset");
         state.resetToCurrentSnapshot(snapshot);
         historyLabel.setText(state.historyLabel());
         updateContextCounter();
@@ -386,12 +471,13 @@ public final class CockpitPanel extends JPanel {
         syncSettingsFromControls();
         quietSaveActiveNote();
         syncSnapshotFromEditors("pre-send");
-        String raw = HttpText.normalizeLineEndings(requestArea.getText());
+        String raw = HttpText.normalizeLineEndings(requestText());
         if (looksLikeBurpErrorHtml(raw)) {
             showError("The request editor contains Burp's HTML proxy error page, not the target request. Reload the original target request from Burp history/repeater.", null);
             return;
         }
         HttpService service = state.currentService();
+        if (service == null) service = editorService().orElse(null);
         if (service == null) {
             Optional<HttpService> inferred = HttpText.inferService(raw, true);
             if (inferred.isEmpty()) {
@@ -415,6 +501,59 @@ public final class CockpitPanel extends JPanel {
         thread.start();
     }
 
+    private void refreshCookiesFromBurp() {
+        try {
+            RequestTarget target = RequestTarget.from(requestText());
+            if (target.host().isBlank()) {
+                setStatus("Refresh Cookies failed: request has no Host header.");
+                return;
+            }
+            List<Object> cookies = readBurpCookies(target.url());
+            Map<String, String> matched = new LinkedHashMap<>();
+            for (Object cookie : cookies) {
+                CookieView view = CookieView.from(cookie);
+                if (view.matches(target)) matched.put(view.name(), view.value());
+            }
+            if (matched.isEmpty()) {
+                setStatus("Refresh Cookies found no matching Burp cookie jar cookies for " + target.host() + target.path() + ".");
+                return;
+            }
+            StringBuilder header = new StringBuilder();
+            for (Map.Entry<String, String> entry : matched.entrySet()) {
+                if (!header.isEmpty()) header.append("; ");
+                header.append(entry.getKey()).append('=').append(entry.getValue());
+            }
+            setRequestEditorText(withCookieHeader(requestText(), header.toString()), editorService().orElse(state.currentService()));
+            setStatus("Refreshed " + matched.size() + " cookie(s) from Burp cookie jar for " + target.host() + ".");
+            updateContextCounter();
+        } catch (Throwable throwable) {
+            showError("Refresh Cookies failed", throwable);
+        }
+    }
+
+    private List<Object> readBurpCookies(String url) throws Exception {
+        Object http = invokeNoArg(api, "http");
+        Object jar = invokeNoArg(http, "cookieJar");
+        Object result = null;
+        for (String method : List.of("cookies", "getCookies")) {
+            result = tryInvokeNoArg(jar, method);
+            if (result != null) break;
+            result = tryInvokeOneString(jar, method, url);
+            if (result != null) break;
+        }
+        if (result == null) throw new IllegalStateException("Montoya cookie jar did not expose cookies()/getCookies().");
+        List<Object> out = new ArrayList<>();
+        if (result instanceof Iterable<?> iterable) {
+            for (Object item : iterable) out.add(item);
+            return out;
+        }
+        if (result.getClass().isArray()) {
+            for (int i = 0; i < Array.getLength(result); i++) out.add(Array.get(result, i));
+            return out;
+        }
+        throw new IllegalStateException("Montoya cookie jar returned unsupported type: " + result.getClass().getName());
+    }
+
     private void runChatFromUi() { runAi(false); }
     private void runAnalysisFromUi() { runAi(true); }
 
@@ -422,7 +561,7 @@ public final class CockpitPanel extends JPanel {
         syncSettingsFromControls();
         quietSaveActiveNote();
         syncSnapshotFromEditors(analysis ? "analysis context" : "chat context");
-        if (looksLikeBurpErrorHtml(requestArea.getText())) {
+        if (looksLikeBurpErrorHtml(requestText())) {
             showError("The current request is Burp's HTML proxy error page. Reload the original request, then run analysis again.", null);
             return;
         }
@@ -481,7 +620,7 @@ public final class CockpitPanel extends JPanel {
                     if (!contentStarted.get()) {
                         replaceActiveAssistantText("No streamed content was returned by the model.");
                     }
-                    state.lastPromptRequest(requestArea.getText());
+                    state.lastPromptRequest(requestText());
                     setStatus("AI response ready.");
                     setChatStatus("AI response ready.");
                     updateContextCounter();
@@ -755,8 +894,10 @@ public final class CockpitPanel extends JPanel {
 
     private void updateContextCounter() {
         HttpService service = state.currentService();
-        if (service == null) service = HttpText.inferService(requestArea.getText(), true).orElse(null);
-        TrafficSnapshot snapshot = new TrafficSnapshot(service, requestArea.getText(), responseArea.getText(), Instant.now(), "counter");
+        String requestText = requestText();
+        if (service == null) service = editorService().orElse(null);
+        if (service == null) service = HttpText.inferService(requestText, true).orElse(null);
+        TrafficSnapshot snapshot = new TrafficSnapshot(service, requestText, responseText(), Instant.now(), "counter");
         boolean analyze = "Analyze".equals(lastMode);
         int traffic = PromptBuilder.estimatedTokens(analyze ? PromptBuilder.buildAnalyzeContext(snapshot) : PromptBuilder.buildChatContext(snapshot));
         int notes = notesCheck.isSelected() ? PromptBuilder.estimatedTokens(PromptBuilder.notesContext(activeNoteContent())) : 0;
@@ -780,7 +921,7 @@ public final class CockpitPanel extends JPanel {
     }
 
     private void exportCurrent(String kind) {
-        String raw = requestArea.getText();
+        String raw = requestText();
         String export = "python".equals(kind) ? exportPython(raw) : exportCurl(raw);
         Toolkit.getDefaultToolkit().getSystemClipboard().setContents(new StringSelection(export), null);
         showExportPopup(kind, export);
@@ -829,6 +970,142 @@ public final class CockpitPanel extends JPanel {
     }
 
     private static String shell(String value) { return "'" + Objects.toString(value, "").replace("'", "'\\''") + "'"; }
+
+    private static String withCookieHeader(String rawRequest, String cookieHeader) {
+        String raw = Objects.toString(rawRequest, "");
+        String newline = raw.contains("\r\n") ? "\r\n" : "\n";
+        String normalized = raw.replace("\r\n", "\n").replace('\r', '\n');
+        int split = normalized.indexOf("\n\n");
+        String headers = split >= 0 ? normalized.substring(0, split) : normalized;
+        String body = split >= 0 ? normalized.substring(split + 2) : "";
+        String[] lines = headers.split("\n", -1);
+        List<String> out = new ArrayList<>();
+        boolean replaced = false;
+        boolean inserted = false;
+        for (int i = 0; i < lines.length; i++) {
+            String line = lines[i];
+            if (line.toLowerCase(Locale.ROOT).startsWith("cookie:")) {
+                if (!replaced) {
+                    out.add("Cookie: " + cookieHeader);
+                    replaced = true;
+                }
+                continue;
+            }
+            out.add(line);
+            if (!replaced && !inserted && i > 0 && line.toLowerCase(Locale.ROOT).startsWith("host:")) {
+                out.add("Cookie: " + cookieHeader);
+                inserted = true;
+            }
+        }
+        if (!replaced && !inserted) out.add(Math.min(1, out.size()), "Cookie: " + cookieHeader);
+        return String.join(newline, out) + newline + newline + body.replace("\n", newline);
+    }
+
+    private record RequestTarget(String scheme, String host, String path) {
+        String url() { return scheme + "://" + host + path; }
+
+        static RequestTarget from(String rawRequest) {
+            String text = Objects.toString(rawRequest, "").replace("\r\n", "\n").replace('\r', '\n');
+            String[] lines = text.split("\n");
+            String first = lines.length > 0 ? lines[0] : "";
+            String host = "";
+            String path = "/";
+            String scheme = "https";
+            for (String line : lines) {
+                String lower = line.toLowerCase(Locale.ROOT);
+                if (lower.startsWith("host:")) host = line.substring(line.indexOf(':') + 1).trim();
+                else if (lower.startsWith("origin: http://") || lower.startsWith("referer: http://")) scheme = "http";
+            }
+            String[] parts = first.split("\\s+");
+            if (parts.length > 1) {
+                path = parts[1].trim();
+                if (path.startsWith("http://") || path.startsWith("https://")) {
+                    try {
+                        URI uri = URI.create(path);
+                        scheme = uri.getScheme() == null ? scheme : uri.getScheme();
+                        host = uri.getHost() == null ? host : uri.getHost();
+                        if (uri.getPort() > 0) host = host + ":" + uri.getPort();
+                        path = uri.getRawPath() == null || uri.getRawPath().isBlank() ? "/" : uri.getRawPath();
+                        if (uri.getRawQuery() != null) path += "?" + uri.getRawQuery();
+                    } catch (Throwable ignored) {
+                        path = "/";
+                    }
+                }
+            }
+            return new RequestTarget(scheme, host, path.isBlank() ? "/" : path);
+        }
+    }
+
+    private record CookieView(String name, String value, String domain, String path, boolean secure) {
+        boolean matches(RequestTarget target) {
+            if (name.isBlank()) return false;
+            String targetHost = stripPort(target.host()).toLowerCase(Locale.ROOT);
+            String cookieDomain = domain.toLowerCase(Locale.ROOT);
+            if (cookieDomain.startsWith(".")) cookieDomain = cookieDomain.substring(1);
+            boolean domainOk = cookieDomain.isBlank() || targetHost.equals(cookieDomain) || targetHost.endsWith("." + cookieDomain);
+            boolean pathOk = path.isBlank() || target.path().startsWith(path);
+            boolean secureOk = !secure || "https".equalsIgnoreCase(target.scheme());
+            return domainOk && pathOk && secureOk;
+        }
+
+        static CookieView from(Object cookie) {
+            return new CookieView(
+                    str(cookie, "name", "getName"),
+                    str(cookie, "value", "getValue"),
+                    str(cookie, "domain", "getDomain"),
+                    str(cookie, "path", "getPath"),
+                    bool(cookie, "secure", "isSecure", "getSecure")
+            );
+        }
+
+        private static String stripPort(String host) {
+            String value = Objects.toString(host, "").trim();
+            int colon = value.lastIndexOf(':');
+            return colon > 0 && value.indexOf(']') < colon ? value.substring(0, colon) : value;
+        }
+
+        private static String str(Object target, String... names) {
+            for (String name : names) {
+                try { return Objects.toString(invokeNoArg(target, name), ""); }
+                catch (Throwable ignored) { }
+            }
+            return "";
+        }
+
+        private static boolean bool(Object target, String... names) {
+            for (String name : names) {
+                try {
+                    Object value = invokeNoArg(target, name);
+                    return value instanceof Boolean b ? b : Boolean.parseBoolean(Objects.toString(value, "false"));
+                } catch (Throwable ignored) { }
+            }
+            return false;
+        }
+    }
+
+    private static Object invokeNoArg(Object target, String name) throws Exception {
+        Method method = target.getClass().getMethod(name);
+        method.setAccessible(true);
+        return method.invoke(target);
+    }
+
+    private static Object tryInvokeNoArg(Object target, String name) {
+        try { return invokeNoArg(target, name); }
+        catch (Throwable ignored) { return null; }
+    }
+
+    private static Object tryInvokeOneString(Object target, String name, String arg) {
+        for (Method method : target.getClass().getMethods()) {
+            if (!method.getName().equals(name) || method.getParameterCount() != 1 || !method.getParameterTypes()[0].equals(String.class)) continue;
+            try {
+                method.setAccessible(true);
+                return method.invoke(target, arg);
+            } catch (Throwable ignored) {
+                return null;
+            }
+        }
+        return null;
+    }
 
     private void setStatus(String status) {
         statusLabel.setText(status);

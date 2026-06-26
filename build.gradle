@@ -11,10 +11,6 @@ java {
     }
 }
 
-repositories {
-    mavenCentral()
-}
-
 dependencies {
     compileOnly 'net.portswigger.burp.extensions:montoya-api:2026.4'
     testCompileOnly 'net.portswigger.burp.extensions:montoya-api:2026.4'
