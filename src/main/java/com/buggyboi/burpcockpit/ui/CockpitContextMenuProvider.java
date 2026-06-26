@@ -40,13 +40,6 @@ public final class CockpitContextMenuProvider implements ContextMenuItemsProvide
         });
         menu.add(analyze);
 
-        JMenuItem note = new JMenuItem("Create / Load Host Note");
-        note.addActionListener(e -> {
-            panel.loadFromBurp(pairs.get(0), "context menu note");
-            panel.ensureCurrentHostNote();
-        });
-        menu.add(note);
-
         return List.of(menu);
     }
 

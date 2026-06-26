@@ -16,7 +16,6 @@ public final class CockpitState {
     private TrafficSnapshot current;
     private int historyIndex = -1;
     private String lastPromptRequest = "";
-    private String pinnedNoteName = "";
 
     public CockpitState(MontoyaApi api, CockpitSettings settings, NotesStore notesStore) {
         this.api = api;
@@ -85,6 +84,4 @@ public final class CockpitState {
     public synchronized String currentResponse() { return current == null ? "" : current.responseText(); }
     public synchronized String lastPromptRequest() { return lastPromptRequest; }
     public synchronized void lastPromptRequest(String value) { lastPromptRequest = value == null ? "" : value; }
-    public synchronized String pinnedNoteName() { return pinnedNoteName; }
-    public synchronized void pinnedNoteName(String value) { pinnedNoteName = value == null ? "" : value; }
 }

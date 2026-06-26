@@ -32,6 +32,8 @@ import javax.swing.JTextArea;
 import javax.swing.JTextField;
 import javax.swing.JToolBar;
 import javax.swing.Timer;
+import javax.swing.event.DocumentEvent;
+import javax.swing.event.DocumentListener;
 import java.awt.BorderLayout;
 import java.awt.Color;
 import java.awt.Component;
@@ -46,7 +48,6 @@ import java.awt.datatransfer.StringSelection;
 import java.lang.reflect.Array;
 import java.lang.reflect.Method;
 import java.net.URI;
-import java.net.URLDecoder;
 import java.nio.charset.StandardCharsets;
 import java.time.Instant;
 import java.util.ArrayList;
@@ -67,11 +68,7 @@ public final class CockpitPanel extends JPanel {
     private static final Dimension TOKEN_SELECTOR_SIZE = new Dimension(58, 24);
     private static final Dimension NOTE_SELECTOR_SIZE = new Dimension(230, 24);
     private static final Dimension NOTE_NAME_SIZE = new Dimension(230, 24);
-    private static final Dimension SEARCH_FIELD_SIZE = new Dimension(190, 24);
     private static final Color HEADER_ACCENT = new Color(82, 145, 204);
-    private static final Color COOKIE_ACCENT = new Color(197, 138, 36);
-    private static final Color PARAM_ACCENT = new Color(61, 155, 117);
-    private static final Color BODY_ACCENT = new Color(138, 110, 196);
 
     private final MontoyaApi api;
     private final CockpitState state;
@@ -84,14 +81,8 @@ public final class CockpitPanel extends JPanel {
     private final TextContextMenu.ChatTranscriptPane transcriptArea = TextContextMenu.transcript(24, 70);
     private final JTextArea promptArea = TextContextMenu.area(4, 70, true);
     private final JTextArea notesArea = TextContextMenu.area(24, 70, true);
-    private final JTextField requestSearchField = TextContextMenu.field("");
-    private final JTextField responseSearchField = TextContextMenu.field("");
     private final JLabel requestSummaryLabel = new JLabel("No request loaded.");
     private final JLabel responseSummaryLabel = new JLabel("No response loaded.");
-    private final JTextArea headersInspector = inspectorArea();
-    private final JTextArea cookiesInspector = inspectorArea();
-    private final JTextArea paramsInspector = inspectorArea();
-    private final JTextArea bodyInspector = inspectorArea();
 
     private final JTextField chatEndpointField;
     private final JTextField modelField;
@@ -118,8 +109,10 @@ public final class CockpitPanel extends JPanel {
     private String lastRagDump = "";
     private String lastMode = "Chat";
     private Timer busyTimer;
+    private Timer noteSaveTimer;
     private int busyTick;
     private boolean suppressNoteEvents;
+    private boolean loadingNote;
     private String activeNoteName = "";
     private String requestTextCache = "";
     private String responseTextCache = "";
@@ -168,21 +161,12 @@ public final class CockpitPanel extends JPanel {
         });
     }
 
-    public void ensureCurrentHostNote() {
-        TextContextMenu.later(() -> autoLoadHostNote(state.current().map(TrafficSnapshot::hostLabel).orElse("DEFAULT")));
-    }
-
     private void configureControls() {
         promptArea.setLineWrap(true);
         promptArea.setWrapStyleWord(true);
         notesArea.setLineWrap(true);
         notesArea.setWrapStyleWord(true);
-        configureSearchField(requestSearchField, true);
-        configureSearchField(responseSearchField, false);
-        configureInspectorArea(headersInspector);
-        configureInspectorArea(cookiesInspector);
-        configureInspectorArea(paramsInspector);
-        configureInspectorArea(bodyInspector);
+        configureNoteAutosave();
 
         tokenSelector.setPrototypeDisplayValue("20k");
         tokenSelector.setPreferredSize(TOKEN_SELECTOR_SIZE);
@@ -211,25 +195,38 @@ public final class CockpitPanel extends JPanel {
         notesCheck.addActionListener(e -> updateContextCounter());
     }
 
+    private void configureNoteAutosave() {
+        noteSaveTimer = new Timer(900, e -> saveActiveNoteAfterEdit());
+        noteSaveTimer.setRepeats(false);
+        notesArea.getDocument().addDocumentListener(new DocumentListener() {
+            @Override public void insertUpdate(DocumentEvent e) { scheduleNoteSaveAfterEdit(); }
+            @Override public void removeUpdate(DocumentEvent e) { scheduleNoteSaveAfterEdit(); }
+            @Override public void changedUpdate(DocumentEvent e) { scheduleNoteSaveAfterEdit(); }
+        });
+    }
+
+    private void scheduleNoteSaveAfterEdit() {
+        if (loadingNote || activeNoteName.isBlank()) return;
+        noteSaveTimer.restart();
+        updateContextCounter();
+    }
+
     private void buildUi() {
         setPreferredSize(new Dimension(1300, 880));
         add(buildToolbar(), BorderLayout.NORTH);
 
         JSplitPane messages = new JSplitPane(
                 JSplitPane.VERTICAL_SPLIT,
-                buildMessagePanel("Request", requestEditor.uiComponent(), requestSearchField, true),
-                buildMessagePanel("Response", responseEditor.uiComponent(), responseSearchField, false));
+                buildMessagePanel("Request", requestEditor.uiComponent(), true),
+                buildMessagePanel("Response", responseEditor.uiComponent(), false));
         messages.setResizeWeight(0.62);
-
-        JSplitPane left = new JSplitPane(JSplitPane.VERTICAL_SPLIT, messages, buildInspectorPanel());
-        left.setResizeWeight(0.76);
 
         rightTabs = new JTabbedPane();
         rightTabs.addTab("Analysis", buildAnalysisPanel());
         rightTabs.addTab("Notes", buildNotesPanel());
         rightPane = rightTabs;
 
-        mainSplitPane = new JSplitPane(JSplitPane.HORIZONTAL_SPLIT, left, rightPane);
+        mainSplitPane = new JSplitPane(JSplitPane.HORIZONTAL_SPLIT, messages, rightPane);
         mainSplitPane.setResizeWeight(0.55);
         add(mainSplitPane, BorderLayout.CENTER);
 
@@ -334,28 +331,17 @@ public final class CockpitPanel extends JPanel {
         return button;
     }
 
-    private JPanel buildMessagePanel(String title, Component editor, JTextField searchField, boolean request) {
+    private JPanel buildMessagePanel(String title, Component editor, boolean request) {
         JPanel panel = new JPanel(new BorderLayout());
         panel.setBorder(BorderFactory.createCompoundBorder(
                 BorderFactory.createLineBorder(mutedBorderColor()),
                 BorderFactory.createEmptyBorder(0, 0, 0, 0)));
 
-        JPanel header = new JPanel(new BorderLayout(8, 0));
+        JPanel header = new JPanel(new BorderLayout());
         header.setBorder(BorderFactory.createEmptyBorder(5, 7, 5, 7));
         JLabel titleLabel = new JLabel(title);
         titleLabel.setFont(titleLabel.getFont().deriveFont(Font.BOLD));
         header.add(titleLabel, BorderLayout.WEST);
-
-        JPanel search = new JPanel(new FlowLayout(FlowLayout.RIGHT, 5, 0));
-        search.add(new JLabel("Search"));
-        search.add(searchField);
-        JButton clear = toolbarButton("Clear", "Clear " + title.toLowerCase(Locale.ROOT) + " search.");
-        clear.addActionListener(e -> {
-            searchField.setText("");
-            applyEditorSearch(request);
-        });
-        search.add(clear);
-        header.add(search, BorderLayout.EAST);
 
         JLabel summary = request ? requestSummaryLabel : responseSummaryLabel;
         summary.setBorder(BorderFactory.createCompoundBorder(
@@ -366,58 +352,6 @@ public final class CockpitPanel extends JPanel {
         panel.add(editor, BorderLayout.CENTER);
         panel.add(summary, BorderLayout.SOUTH);
         return panel;
-    }
-
-    private JTabbedPane buildInspectorPanel() {
-        JTabbedPane tabs = new JTabbedPane();
-        tabs.addTab("Headers", inspectorTab(headersInspector, HEADER_ACCENT));
-        tabs.addTab("Cookies", inspectorTab(cookiesInspector, COOKIE_ACCENT));
-        tabs.addTab("Params", inspectorTab(paramsInspector, PARAM_ACCENT));
-        tabs.addTab("Body", inspectorTab(bodyInspector, BODY_ACCENT));
-        tabs.setForegroundAt(0, HEADER_ACCENT);
-        tabs.setForegroundAt(1, COOKIE_ACCENT);
-        tabs.setForegroundAt(2, PARAM_ACCENT);
-        tabs.setForegroundAt(3, BODY_ACCENT);
-        tabs.setPreferredSize(new Dimension(720, 210));
-        return tabs;
-    }
-
-    private JPanel inspectorTab(JTextArea area, Color accent) {
-        JPanel panel = new JPanel(new BorderLayout());
-        JPanel stripe = new JPanel();
-        stripe.setPreferredSize(new Dimension(5, 1));
-        stripe.setBackground(accent);
-        JScrollPane scroll = new JScrollPane(area);
-        scroll.setBorder(BorderFactory.createEmptyBorder());
-        panel.setBorder(BorderFactory.createLineBorder(mutedBorderColor()));
-        panel.add(stripe, BorderLayout.WEST);
-        panel.add(scroll, BorderLayout.CENTER);
-        return panel;
-    }
-
-    private void configureSearchField(JTextField field, boolean request) {
-        field.setPreferredSize(SEARCH_FIELD_SIZE);
-        field.setMaximumSize(SEARCH_FIELD_SIZE);
-        field.setToolTipText(request ? "Search only the request editor." : "Search only the response editor.");
-        field.addActionListener(e -> applyEditorSearch(request));
-    }
-
-    private void applyEditorSearch(boolean request) {
-        String expression = request ? requestSearchField.getText() : responseSearchField.getText();
-        if (request) requestEditor.setSearchExpression(expression);
-        else responseEditor.setSearchExpression(expression);
-    }
-
-    private static JTextArea inspectorArea() {
-        JTextArea area = TextContextMenu.area(8, 42, false);
-        area.setLineWrap(false);
-        area.setWrapStyleWord(false);
-        return area;
-    }
-
-    private void configureInspectorArea(JTextArea area) {
-        area.setFont(new Font(Font.MONOSPACED, Font.PLAIN, 12));
-        area.setBorder(BorderFactory.createEmptyBorder(7, 8, 7, 8));
     }
 
     private Component buildAnalysisPanel() {
@@ -528,10 +462,8 @@ public final class CockpitPanel extends JPanel {
     }
 
     private void loadSnapshot(TrafficSnapshot snapshot) {
-        quietSaveActiveNote();
         state.pushSnapshot(snapshot);
         loadSnapshotWithoutPush(snapshot);
-        autoLoadHostNote(snapshot.hostLabel());
     }
 
     private void loadSnapshotWithoutPush(TrafficSnapshot snapshot) {
@@ -608,7 +540,6 @@ public final class CockpitPanel extends JPanel {
     }
 
     private void clearContextCache() {
-        quietSaveActiveNote();
         stopBusyIndicator();
         lastRagDump = "";
         HttpService service = state.currentService();
@@ -625,7 +556,6 @@ public final class CockpitPanel extends JPanel {
 
     private void sendCurrentRequest() {
         syncSettingsFromControls();
-        quietSaveActiveNote();
         updateContextCounter();
         String raw = HttpText.normalizeLineEndings(requestText());
         if (looksLikeBurpErrorHtml(raw)) {
@@ -732,7 +662,6 @@ public final class CockpitPanel extends JPanel {
 
     private void runAi(boolean analysis) {
         syncSettingsFromControls();
-        quietSaveActiveNote();
         syncSnapshotFromEditors(analysis ? "analysis context" : "chat context");
         if (looksLikeBurpErrorHtml(requestText())) {
             showError("The current request is Burp's HTML proxy error page. Reload the original request, then run analysis again.", null);
@@ -853,10 +782,7 @@ public final class CockpitPanel extends JPanel {
     private void setChatStatus(String status) { chatStatusLabel.setText(Objects.toString(status, "")); }
 
     private String activeNoteContent() {
-        String text = notesArea.getText();
-        if (!text.isBlank()) return text;
-        String name = activeNoteName.isBlank() ? noteSaveSourceName() : activeNoteName;
-        return name.isBlank() ? "" : notesStore.read(name);
+        return activeNoteName.isBlank() ? "" : notesArea.getText();
     }
 
     private void stopCurrentAiWorker() {
@@ -869,26 +795,15 @@ public final class CockpitPanel extends JPanel {
     }
 
     private void refreshNoteList() {
-        String selected = activeNoteName.isBlank() ? noteSaveSourceName() : activeNoteName;
+        String selected = activeNoteName.isBlank() ? selectedComboNoteName() : activeNoteName;
         suppressNoteEvents = true;
         noteSelector.removeAllItems();
         List<String> names = notesStore.listNoteNames();
-        if (names.isEmpty()) names = List.of(notesStore.ensureNote("DEFAULT"));
         for (String name : names) noteSelector.addItem(name);
         suppressNoteEvents = false;
-        if (!selected.isBlank()) selectNote(selected);
+        if (!selected.isBlank() && names.contains(selected)) selectNote(selected);
         else if (!names.isEmpty()) selectNote(names.get(0));
-    }
-
-    private void autoLoadHostNote(String hostLabel) {
-        String name = notesStore.defaultNoteNameForHost(hostLabel);
-        notesStore.ensureNote(name);
-        refreshNoteList();
-        selectNote(name);
-        activeNoteName = name;
-        notesArea.setText(notesStore.read(name));
-        notesArea.setCaretPosition(0);
-        state.pinnedNoteName(name);
+        else noteNameField.setText(activeNoteName.isBlank() ? "DEFAULT" : activeNoteName);
         updateContextCounter();
     }
 
@@ -910,38 +825,38 @@ public final class CockpitPanel extends JPanel {
     }
 
     private void createNewNote() {
-        String defaultName = state.current().map(s -> notesStore.defaultNoteNameForHost(s.hostLabel())).orElse("DEFAULT");
+        flushPendingNoteSave();
+        String defaultName = currentNoteName();
+        if (defaultName.isBlank()) defaultName = "DEFAULT";
         String entered = JOptionPane.showInputDialog(this, "New note name", defaultName);
-        String name = NotesStore.sanitizeName(entered);
+        String name = cleanOptionalNoteName(entered);
         if (name.isBlank()) return;
-        quietSaveActiveNote();
         notesStore.ensureNote(name);
         refreshNoteList();
         selectNote(name);
         activeNoteName = name;
-        notesArea.setText(notesStore.read(name));
+        setNoteText(notesStore.read(name));
         notesArea.setCaretPosition(0);
-        state.pinnedNoteName(name);
         setStatus("Created note: " + name);
         updateContextCounter();
     }
 
     private void loadSelectedNote() {
-        quietSaveActiveNote();
+        flushPendingNoteSave();
         String name = selectedComboNoteName();
         if (name.isBlank()) name = currentNoteName();
         if (name.isBlank()) return;
         notesStore.ensureNote(name);
         selectNote(name);
         activeNoteName = name;
-        notesArea.setText(notesStore.read(name));
+        setNoteText(notesStore.read(name));
         notesArea.setCaretPosition(0);
-        state.pinnedNoteName(name);
         setStatus("Loaded note: " + name);
         updateContextCounter();
     }
 
     private void saveSelectedNote() {
+        if (noteSaveTimer != null) noteSaveTimer.stop();
         String targetName = currentNoteName();
         String sourceName = noteSaveSourceName();
         if (targetName.isBlank()) targetName = sourceName.isBlank() ? "DEFAULT" : sourceName;
@@ -957,53 +872,61 @@ public final class CockpitPanel extends JPanel {
             activeNoteName = targetName;
             refreshNoteList();
             selectNote(targetName);
-            state.pinnedNoteName(targetName);
             updateContextCounter();
         } catch (Throwable throwable) {
             showError("Failed to save note", throwable);
         }
     }
 
-    private void quietSaveActiveNote() {
+    private void setNoteText(String text) {
+        loadingNote = true;
+        try {
+            notesArea.setText(Objects.toString(text, ""));
+        } finally {
+            loadingNote = false;
+        }
+    }
+
+    private void flushPendingNoteSave() {
+        if (noteSaveTimer != null && noteSaveTimer.isRunning()) {
+            noteSaveTimer.stop();
+            saveActiveNoteAfterEdit();
+        }
+    }
+
+    private void saveActiveNoteAfterEdit() {
         String name = noteSaveSourceName();
-        if (name.isBlank()) name = currentNoteName();
         if (name.isBlank()) return;
         try {
             notesStore.write(name, notesArea.getText());
             activeNoteName = name;
-            state.pinnedNoteName(name);
+            setStatus("Saved note locally: " + name);
+            updateContextCounter();
         } catch (Throwable throwable) {
-            api.logging().logToError("Burp Cockpit failed to auto-save note", throwable);
+            api.logging().logToError("Burp Cockpit failed to save note after edit", throwable);
         }
     }
 
     private String noteSaveSourceName() {
-        String active = NotesStore.sanitizeName(activeNoteName);
-        if (!active.isBlank() && notesStore.exists(active)) return active;
-        String pinned = NotesStore.sanitizeName(state.pinnedNoteName());
-        if (!pinned.isBlank() && notesStore.exists(pinned)) return pinned;
-        String selected = selectedListNoteName();
-        if (!selected.isBlank() && notesStore.exists(selected)) return selected;
-        String combo = selectedComboNoteName();
-        if (!combo.isBlank() && notesStore.exists(combo)) return combo;
-        return "";
+        if (activeNoteName.isBlank()) return "";
+        return NotesStore.sanitizeName(activeNoteName);
     }
 
     private String currentNoteName() {
-        String typedName = NotesStore.sanitizeName(noteNameField.getText());
+        String typedName = cleanOptionalNoteName(noteNameField.getText());
         if (!typedName.isBlank()) return typedName;
         return selectedComboNoteName();
-    }
-
-    private String selectedListNoteName() {
-        Object selected = noteSelector.getSelectedItem();
-        return NotesStore.sanitizeName(Objects.toString(selected, ""));
     }
 
     private String selectedComboNoteName() {
         Object selected = noteSelector.getEditor().getItem();
         if (selected == null) selected = noteSelector.getSelectedItem();
-        return NotesStore.sanitizeName(Objects.toString(selected, ""));
+        return cleanOptionalNoteName(selected);
+    }
+
+    private static String cleanOptionalNoteName(Object value) {
+        String raw = Objects.toString(value, "").trim();
+        return raw.isBlank() ? "" : NotesStore.sanitizeName(raw);
     }
 
     private void showSettingsDialog() {
@@ -1093,68 +1016,6 @@ public final class CockpitPanel extends JPanel {
         responseSummaryLabel.setText(response.isBlank()
                 ? "No response loaded."
                 : firstLine(response) + " | Body " + byteCount(HttpText.body(response)));
-        headersInspector.setText(headerInspectorText(request, response));
-        cookiesInspector.setText(cookieInspectorText(request, response));
-        paramsInspector.setText(paramInspectorText(request));
-        bodyInspector.setText(bodyInspectorText(request, response));
-        for (JTextArea area : List.of(headersInspector, cookiesInspector, paramsInspector, bodyInspector)) area.setCaretPosition(0);
-    }
-
-    private static String headerInspectorText(String request, String response) {
-        StringBuilder out = new StringBuilder();
-        appendHeaderBlock(out, "Request headers", request);
-        out.append('\n');
-        appendHeaderBlock(out, "Response headers", response);
-        return out.toString().trim();
-    }
-
-    private static void appendHeaderBlock(StringBuilder out, String title, String message) {
-        out.append(title).append('\n');
-        List<String> headers = messageHeaders(message);
-        if (headers.isEmpty()) {
-            out.append("  No headers found.\n");
-            return;
-        }
-        for (String header : headers) out.append("  ").append(header).append('\n');
-    }
-
-    private static String cookieInspectorText(String request, String response) {
-        StringBuilder out = new StringBuilder();
-        out.append("Request cookies\n");
-        List<String> requestCookies = requestCookies(request);
-        if (requestCookies.isEmpty()) out.append("  No Cookie header found.\n");
-        else requestCookies.forEach(cookie -> out.append("  ").append(cookie).append('\n'));
-
-        out.append("\nResponse cookies\n");
-        List<String> responseCookies = responseCookies(response);
-        if (responseCookies.isEmpty()) out.append("  No Set-Cookie headers found.\n");
-        else responseCookies.forEach(cookie -> out.append("  ").append(cookie).append('\n'));
-        return out.toString().trim();
-    }
-
-    private static String paramInspectorText(String request) {
-        StringBuilder out = new StringBuilder();
-        List<String> query = queryParams(request);
-        out.append("Query params\n");
-        if (query.isEmpty()) out.append("  No query params found.\n");
-        else query.forEach(param -> out.append("  ").append(param).append('\n'));
-
-        out.append("\nForm params\n");
-        List<String> form = formParams(request);
-        if (form.isEmpty()) out.append("  No URL-encoded form params found.\n");
-        else form.forEach(param -> out.append("  ").append(param).append('\n'));
-        return out.toString().trim();
-    }
-
-    private static String bodyInspectorText(String request, String response) {
-        String requestBody = HttpText.body(request);
-        String responseBody = HttpText.body(response);
-        StringBuilder out = new StringBuilder();
-        out.append("Request body ").append(byteCount(requestBody)).append('\n');
-        out.append(requestBody.isBlank() ? "  Empty\n" : indentPreview(requestBody));
-        out.append("\nResponse body ").append(byteCount(responseBody)).append('\n');
-        out.append(responseBody.isBlank() ? "  Empty\n" : indentPreview(responseBody));
-        return out.toString().trim();
     }
 
     private static List<String> messageHeaders(String message) {
@@ -1181,56 +1042,6 @@ public final class CockpitPanel extends JPanel {
         return out;
     }
 
-    private static List<String> responseCookies(String response) {
-        List<String> out = new ArrayList<>();
-        for (String header : messageHeaders(response)) {
-            if (!header.toLowerCase(Locale.ROOT).startsWith("set-cookie:")) continue;
-            String value = header.substring(header.indexOf(':') + 1).trim();
-            if (!value.isBlank()) out.add(value);
-        }
-        return out;
-    }
-
-    private static List<String> queryParams(String request) {
-        String path = requestPath(request);
-        int queryStart = path.indexOf('?');
-        return queryStart < 0 ? List.of() : splitParams(path.substring(queryStart + 1));
-    }
-
-    private static List<String> formParams(String request) {
-        String contentType = headerValue(request, "content-type").toLowerCase(Locale.ROOT);
-        if (!contentType.contains("application/x-www-form-urlencoded")) return List.of();
-        return splitParams(HttpText.body(request));
-    }
-
-    private static List<String> splitParams(String raw) {
-        List<String> out = new ArrayList<>();
-        for (String pair : Objects.toString(raw, "").split("&")) {
-            if (pair.isBlank()) continue;
-            int equals = pair.indexOf('=');
-            String name = equals < 0 ? pair : pair.substring(0, equals);
-            String value = equals < 0 ? "" : pair.substring(equals + 1);
-            out.add(urlDecode(name) + (value.isBlank() ? "" : " = " + urlDecode(value)));
-        }
-        return out;
-    }
-
-    private static String headerValue(String message, String name) {
-        String prefix = name.toLowerCase(Locale.ROOT) + ":";
-        for (String header : messageHeaders(message)) {
-            if (header.toLowerCase(Locale.ROOT).startsWith(prefix)) {
-                return header.substring(header.indexOf(':') + 1).trim();
-            }
-        }
-        return "";
-    }
-
-    private static String requestPath(String request) {
-        String first = firstLine(request);
-        String[] parts = first.split("\\s+");
-        return parts.length > 1 ? parts[1] : "";
-    }
-
     private static String firstLine(String message) {
         String normalized = Objects.toString(message, "").replace("\r\n", "\n").replace('\r', '\n');
         int newline = normalized.indexOf('\n');
@@ -1239,24 +1050,6 @@ public final class CockpitPanel extends JPanel {
 
     private static String byteCount(String value) {
         return Objects.toString(value, "").getBytes(StandardCharsets.UTF_8).length + " bytes";
-    }
-
-    private static String indentPreview(String value) {
-        String preview = Objects.toString(value, "");
-        if (preview.length() > 5000) preview = preview.substring(0, 5000) + "\n... truncated ...";
-        StringBuilder out = new StringBuilder(preview.length() + 32);
-        for (String line : preview.replace("\r\n", "\n").replace('\r', '\n').split("\n", -1)) {
-            out.append("  ").append(line).append('\n');
-        }
-        return out.toString();
-    }
-
-    private static String urlDecode(String value) {
-        try {
-            return URLDecoder.decode(Objects.toString(value, ""), StandardCharsets.UTF_8);
-        } catch (Throwable ignored) {
-            return Objects.toString(value, "");
-        }
     }
 
     private static Color mutedBorderColor() {

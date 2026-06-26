@@ -169,17 +169,17 @@ public final class TextContextMenu {
             StringBuilder html = new StringBuilder(4096);
             html.append("<html><head><style>")
                     .append("body{font-family:sans-serif;font-size:12px;background:").append(background).append(";color:").append(foreground).append(";margin:8px;}")
-                    .append(".card{border:1px solid #4a4d52;border-left:5px solid #547aa5;margin:0 0 12px 0;padding:12px;background:#25272b;}")
+                    .append(".card{border:1px solid #3d4148;border-left:4px solid #547aa5;margin:0 0 10px 0;padding:10px;background:#25272b;}")
                     .append(".user{border-left-color:#5291cc;background:#252932;}")
                     .append(".assistant{border-left-color:#3d9b75;background:#242c29;}")
                     .append(".analyze{border-left-color:#c58a24;background:#302c22;}")
-                    .append(".role{color:#d2d6dd;font-weight:bold;margin-bottom:9px;padding-bottom:5px;border-bottom:1px solid #3d4148;}")
-                    .append(".p{margin:0 0 7px 0;}")
-                    .append(".h{font-weight:bold;color:#f0f2f5;margin:8px 0 5px 0;}")
-                    .append(".li{margin:0 0 4px 12px;}")
-                    .append(".quote{border-left:3px solid #6b7280;margin:6px 0;padding:2px 0 2px 8px;color:#c9ccd2;}")
-                    .append("pre{background:#17191c;border:1px solid #3d4148;padding:8px;white-space:pre-wrap;margin:6px 0 8px 0;}")
-                    .append("code{font-family:monospaced;background:#1b1e22;padding:1px 3px;}")
+                    .append(".role{font-size:11px;color:#c9ccd2;font-weight:bold;margin:0 0 7px 0;padding:0 0 5px 0;border-bottom:1px solid #3d4148;}")
+                    .append(".p{font-size:12px;margin:0 0 6px 0;}")
+                    .append(".h{font-size:12px;font-weight:bold;color:#f0f2f5;margin:7px 0 6px 0;}")
+                    .append(".li{font-size:12px;margin:0 0 5px 14px;}")
+                    .append(".quote{font-size:12px;border-left:3px solid #6b7280;margin:6px 0;padding:2px 0 2px 8px;color:#c9ccd2;}")
+                    .append("pre{font-family:monospaced;font-size:12px;background:#17191c;border:1px solid #3d4148;padding:8px;white-space:pre-wrap;margin:7px 0 8px 0;}")
+                    .append("code{font-family:monospaced;font-size:12px;background:#1b1e22;padding:1px 3px;}")
                     .append("a{color:#80bfff;}")
                     .append("</style></head><body>");
             for (ChatCard card : cards) {
@@ -216,7 +216,7 @@ public final class TextContextMenu {
                     out.append(escape(raw)).append("\n");
                 } else if (line.isBlank()) {
                     out.append("<div class='p'>&nbsp;</div>");
-                } else if (line.startsWith("#")) {
+                } else if (line.matches("^#{1,6}\\s+.*")) {
                     out.append("<div class='h'>").append(inlineMarkdown(line.replaceFirst("^#{1,6}\\s*", ""))).append("</div>");
                 } else if (line.startsWith("- ") || line.startsWith("* ")) {
                     out.append("<div class='li'>&bull; ").append(inlineMarkdown(line.substring(2))).append("</div>");

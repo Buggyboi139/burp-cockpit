@@ -104,14 +104,6 @@ public final class NotesStore {
         return name;
     }
 
-    public String defaultNoteNameForHost(String host) {
-        String base = Objects.toString(host, "DEFAULT").trim();
-        if (base.isBlank()) {
-            base = "DEFAULT";
-        }
-        return sanitizeName(base);
-    }
-
     public static String sanitizeName(String name) {
         String cleaned = Objects.toString(name, "DEFAULT").trim();
         if (cleaned.isBlank()) {
