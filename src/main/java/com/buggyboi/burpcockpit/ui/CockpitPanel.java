@@ -51,11 +51,13 @@ import java.nio.charset.StandardCharsets;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
+import java.util.Set;
 import java.util.concurrent.atomic.AtomicBoolean;
 
 import static burp.api.montoya.http.message.requests.HttpRequest.httpRequest;
@@ -657,27 +659,28 @@ public final class CockpitPanel extends JPanel {
 
     private void refreshCookiesFromBurp() {
         try {
-            RequestTarget target = RequestTarget.from(requestText());
+            String originalRequest = requestText();
+            RequestTarget target = RequestTarget.from(originalRequest);
             if (target.host().isBlank()) {
                 setStatus("Refresh Cookies failed: request has no Host header.");
                 return;
             }
-            List<Object> cookies = readBurpCookies(target.url());
-            Map<String, String> matched = new LinkedHashMap<>();
-            for (Object cookie : cookies) {
-                CookieView view = CookieView.from(cookie);
-                if (view.matches(target)) matched.put(view.name(), view.value());
-            }
-            if (matched.isEmpty()) {
-                setStatus("Refresh Cookies found no matching Burp cookie jar cookies for " + target.host() + target.path() + ".");
+            Set<String> originalNames = requestCookieNames(originalRequest);
+            if (originalNames.isEmpty()) {
+                setStatus("Refresh Cookies skipped: request has no Cookie header to refresh.");
                 return;
             }
-            StringBuilder header = new StringBuilder();
-            for (Map.Entry<String, String> entry : matched.entrySet()) {
-                if (!header.isEmpty()) header.append("; ");
-                header.append(entry.getKey()).append('=').append(entry.getValue());
+            List<Object> cookies = readBurpCookies(target.url());
+            Map<String, CookieView> matched = new LinkedHashMap<>();
+            for (Object cookie : cookies) {
+                CookieView view = CookieView.from(cookie);
+                if (view.matches(target) && originalNames.contains(view.name())) putPreferredCookie(matched, view);
             }
-            setRequestEditorText(withCookieHeader(requestText(), header.toString()), editorService().orElse(state.currentService()));
+            if (matched.isEmpty()) {
+                setStatus("Refresh Cookies found no Burp cookie jar values for the request's existing cookies on " + target.host() + target.path() + ".");
+                return;
+            }
+            setRequestEditorText(withRefreshedCookies(originalRequest, cookieValuesInRequestOrder(originalNames, matched)), editorService().orElse(state.currentService()));
             setStatus("Refreshed " + matched.size() + " cookie(s) from Burp cookie jar for " + target.host() + ".");
             updateContextCounter();
         } catch (Throwable throwable) {
@@ -706,6 +709,22 @@ public final class CockpitPanel extends JPanel {
             return out;
         }
         throw new IllegalStateException("Montoya cookie jar returned unsupported type: " + result.getClass().getName());
+    }
+
+    private static void putPreferredCookie(Map<String, CookieView> matched, CookieView candidate) {
+        CookieView existing = matched.get(candidate.name());
+        if (existing == null || candidate.path().length() > existing.path().length()) {
+            matched.put(candidate.name(), candidate);
+        }
+    }
+
+    private static Map<String, String> cookieValuesInRequestOrder(Set<String> originalNames, Map<String, CookieView> matched) {
+        Map<String, String> values = new LinkedHashMap<>();
+        for (String name : originalNames) {
+            CookieView view = matched.get(name);
+            if (view != null) values.put(name, view.value());
+        }
+        return values;
     }
 
     private void runChatFromUi() { runAi(false); }
@@ -1307,7 +1326,7 @@ public final class CockpitPanel extends JPanel {
 
     private static String shell(String value) { return "'" + Objects.toString(value, "").replace("'", "'\\''") + "'"; }
 
-    private static String withCookieHeader(String rawRequest, String cookieHeader) {
+    private static String withRefreshedCookies(String rawRequest, Map<String, String> refreshed) {
         String raw = Objects.toString(rawRequest, "");
         String newline = raw.contains("\r\n") ? "\r\n" : "\n";
         String normalized = raw.replace("\r\n", "\n").replace('\r', '\n');
@@ -1316,25 +1335,39 @@ public final class CockpitPanel extends JPanel {
         String body = split >= 0 ? normalized.substring(split + 2) : "";
         String[] lines = headers.split("\n", -1);
         List<String> out = new ArrayList<>();
-        boolean replaced = false;
-        boolean inserted = false;
-        for (int i = 0; i < lines.length; i++) {
-            String line = lines[i];
+        for (String line : lines) {
             if (line.toLowerCase(Locale.ROOT).startsWith("cookie:")) {
-                if (!replaced) {
-                    out.add("Cookie: " + cookieHeader);
-                    replaced = true;
-                }
+                out.add("Cookie: " + refreshedCookieHeader(line.substring(line.indexOf(':') + 1), refreshed));
                 continue;
             }
             out.add(line);
-            if (!replaced && !inserted && i > 0 && line.toLowerCase(Locale.ROOT).startsWith("host:")) {
-                out.add("Cookie: " + cookieHeader);
-                inserted = true;
-            }
         }
-        if (!replaced && !inserted) out.add(Math.min(1, out.size()), "Cookie: " + cookieHeader);
         return String.join(newline, out) + newline + newline + body.replace("\n", newline);
+    }
+
+    private static String refreshedCookieHeader(String cookieHeader, Map<String, String> refreshed) {
+        List<String> out = new ArrayList<>();
+        for (String cookie : Objects.toString(cookieHeader, "").split(";")) {
+            String clean = cookie.trim();
+            if (clean.isBlank()) continue;
+            int equals = clean.indexOf('=');
+            String name = equals < 0 ? clean : clean.substring(0, equals).trim();
+            String value = equals < 0 ? "" : clean.substring(equals + 1).trim();
+            if (refreshed.containsKey(name)) out.add(name + "=" + refreshed.get(name));
+            else out.add(equals < 0 ? name : name + "=" + value);
+        }
+        return String.join("; ", out);
+    }
+
+    private static Set<String> requestCookieNames(String request) {
+        Set<String> out = new LinkedHashSet<>();
+        for (String cookie : requestCookies(request)) {
+            int equals = cookie.indexOf('=');
+            String name = equals < 0 ? cookie : cookie.substring(0, equals);
+            name = name.trim();
+            if (!name.isBlank()) out.add(name);
+        }
+        return out;
     }
 
     private record RequestTarget(String scheme, String host, String path) {
@@ -1379,9 +1412,21 @@ public final class CockpitPanel extends JPanel {
             String cookieDomain = domain.toLowerCase(Locale.ROOT);
             if (cookieDomain.startsWith(".")) cookieDomain = cookieDomain.substring(1);
             boolean domainOk = cookieDomain.isBlank() || targetHost.equals(cookieDomain) || targetHost.endsWith("." + cookieDomain);
-            boolean pathOk = path.isBlank() || target.path().startsWith(path);
+            boolean pathOk = pathMatches(target.path(), path);
             boolean secureOk = !secure || "https".equalsIgnoreCase(target.scheme());
             return domainOk && pathOk && secureOk;
+        }
+
+        private static boolean pathMatches(String targetPath, String cookiePath) {
+            String target = Objects.toString(targetPath, "/");
+            int query = target.indexOf('?');
+            if (query >= 0) target = target.substring(0, query);
+            if (target.isBlank()) target = "/";
+            String cookie = Objects.toString(cookiePath, "");
+            if (cookie.isBlank()) return true;
+            if (target.equals(cookie)) return true;
+            if (!target.startsWith(cookie)) return false;
+            return cookie.endsWith("/") || (target.length() > cookie.length() && target.charAt(cookie.length()) == '/');
         }
 
         static CookieView from(Object cookie) {
