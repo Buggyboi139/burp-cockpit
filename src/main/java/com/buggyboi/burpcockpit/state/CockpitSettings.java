@@ -17,6 +17,7 @@ public final class CockpitSettings {
     private static final String DEFAULT_CHAT_ENDPOINT = "http://10.0.2.2:8080/v1/chat/completions";
     private static final String DEFAULT_MODEL = "default";
     private static final String DEFAULT_RAG_SEARCH_ENDPOINT = "http://10.0.2.2:5000/rag/search";
+    private static final String DEFAULT_RAG_API_KEY = "";
     private static final String DEFAULT_NOTES_DIR = Path.of(System.getProperty("user.home"), ".burp-cockpit", "notes").toString();
 
     private final Preferences prefs = Preferences.userRoot().node(NODE);
@@ -36,6 +37,9 @@ public final class CockpitSettings {
         return value;
     }
     public void ragSearchEndpoint(String value) { prefs.put("ragSearchEndpoint", clean(value, DEFAULT_RAG_SEARCH_ENDPOINT)); }
+
+    public String ragApiKey() { return prefs.get("ragApiKey", DEFAULT_RAG_API_KEY); }
+    public void ragApiKey(String value) { prefs.put("ragApiKey", clean(value, DEFAULT_RAG_API_KEY)); }
 
     public Path notesDirectory() { return Path.of(prefs.get("notesDirectory", DEFAULT_NOTES_DIR)); }
     public void notesDirectory(String value) { prefs.put("notesDirectory", clean(value, DEFAULT_NOTES_DIR)); }

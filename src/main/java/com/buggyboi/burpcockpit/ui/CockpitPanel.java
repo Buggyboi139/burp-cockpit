@@ -97,6 +97,7 @@ public final class CockpitPanel extends JPanel {
     private final JTextField chatEndpointField;
     private final JTextField modelField;
     private final JTextField ragEndpointField;
+    private final JTextField ragApiKeyField;
     private final JTextField notesDirField;
     private final JTextField noteNameField = TextContextMenu.field("");
 
@@ -139,6 +140,7 @@ public final class CockpitPanel extends JPanel {
         this.chatEndpointField = TextContextMenu.field(settings.chatEndpoint());
         this.modelField = TextContextMenu.field(settings.model());
         this.ragEndpointField = TextContextMenu.field(settings.ragSearchEndpoint());
+        this.ragApiKeyField = TextContextMenu.field(settings.ragApiKey());
         this.notesDirField = TextContextMenu.field(settings.notesDirectory().toString());
         this.thinkingCheck = new JCheckBox("Thinking", settings.includeThinking());
         this.deltaCheck = new JCheckBox("Delta only", settings.deltaOnly());
@@ -840,7 +842,7 @@ public final class CockpitPanel extends JPanel {
                 if (ragCheck.isSelected()) {
                     try {
                         String query = PromptBuilder.ragQuery(state, userInstruction);
-                        ragDump = lumaraClient.ragSearch(settings, query, 5, "both");
+                        ragDump = lumaraClient.ragSearch(settings, query, 5, "both", promptSnapshot);
                     } catch (Throwable throwable) {
                         ragDump = "RAG injection failed: " + Objects.toString(throwable.getMessage(), throwable.getClass().getSimpleName());
                     }
@@ -1124,6 +1126,7 @@ public final class CockpitPanel extends JPanel {
         row = addSettingRow(panel, gbc, row, "Chat endpoint", chatEndpointField);
         row = addSettingRow(panel, gbc, row, "Model", modelField);
         row = addSettingRow(panel, gbc, row, "RAG search endpoint", ragEndpointField);
+        row = addSettingRow(panel, gbc, row, "RAG API key", ragApiKeyField);
         row = addSettingRow(panel, gbc, row, "Notes directory", notesDirField);
         int choice = JOptionPane.showConfirmDialog(this, panel, "Burp Cockpit Settings", JOptionPane.OK_CANCEL_OPTION, JOptionPane.PLAIN_MESSAGE);
         if (choice == JOptionPane.OK_OPTION) {
@@ -1149,6 +1152,7 @@ public final class CockpitPanel extends JPanel {
         settings.chatEndpoint(chatEndpointField.getText());
         settings.model(modelField.getText());
         settings.ragSearchEndpoint(ragEndpointField.getText());
+        settings.ragApiKey(ragApiKeyField.getText());
         settings.notesDirectory(notesDirField.getText());
         settings.includeThinking(thinkingCheck.isSelected());
         settings.deltaOnly(deltaCheck.isSelected());
