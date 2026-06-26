@@ -1,10 +1,13 @@
 package com.buggyboi.burpcockpit.ui;
 
 import burp.api.montoya.MontoyaApi;
+import burp.api.montoya.core.ByteArray;
+import burp.api.montoya.core.Range;
 import burp.api.montoya.http.HttpService;
 import burp.api.montoya.http.message.HttpRequestResponse;
 import burp.api.montoya.http.message.requests.HttpRequest;
 import burp.api.montoya.http.message.responses.HttpResponse;
+import burp.api.montoya.ui.Selection;
 import burp.api.montoya.ui.editor.EditorOptions;
 import burp.api.montoya.ui.editor.HttpRequestEditor;
 import burp.api.montoya.ui.editor.HttpResponseEditor;
@@ -13,6 +16,7 @@ import com.buggyboi.burpcockpit.notes.NotesStore;
 import com.buggyboi.burpcockpit.state.CockpitSettings;
 import com.buggyboi.burpcockpit.state.CockpitState;
 import com.buggyboi.burpcockpit.state.TrafficSnapshot;
+import com.buggyboi.burpcockpit.util.CodecChain;
 import com.buggyboi.burpcockpit.util.HttpText;
 import com.buggyboi.burpcockpit.util.JsonUtil;
 import com.buggyboi.burpcockpit.util.PromptBuilder;
@@ -22,6 +26,7 @@ import javax.swing.Box;
 import javax.swing.JButton;
 import javax.swing.JCheckBox;
 import javax.swing.JComboBox;
+import javax.swing.JDialog;
 import javax.swing.JLabel;
 import javax.swing.JOptionPane;
 import javax.swing.JPanel;
@@ -31,19 +36,23 @@ import javax.swing.JTabbedPane;
 import javax.swing.JTextArea;
 import javax.swing.JTextField;
 import javax.swing.JToolBar;
+import javax.swing.SwingUtilities;
 import javax.swing.Timer;
 import javax.swing.event.DocumentEvent;
 import javax.swing.event.DocumentListener;
 import java.awt.BorderLayout;
 import java.awt.Color;
 import java.awt.Component;
+import java.awt.Dialog;
 import java.awt.Dimension;
 import java.awt.FlowLayout;
 import java.awt.Font;
 import java.awt.GridBagConstraints;
 import java.awt.GridBagLayout;
+import java.awt.GridLayout;
 import java.awt.Insets;
 import java.awt.Toolkit;
+import java.awt.Window;
 import java.awt.datatransfer.StringSelection;
 import java.lang.reflect.Array;
 import java.lang.reflect.Method;
@@ -51,6 +60,7 @@ import java.net.URI;
 import java.nio.charset.StandardCharsets;
 import java.time.Instant;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
@@ -258,13 +268,16 @@ public final class CockpitPanel extends JPanel {
         send.setOpaque(true);
         send.addActionListener(e -> sendCurrentRequest());
 
+        JButton autoDecode = toolbarButton("Auto Decode", "Decode, edit, and re-encode the selected request text.");
+        autoDecode.addActionListener(e -> autoDecodeSelection());
+
         JButton refreshCookies = toolbarButton("Cookies", "Refresh matching cookies from Burp's cookie jar.");
         refreshCookies.addActionListener(e -> refreshCookiesFromBurp());
 
         JButton clearCache = toolbarButton("Clear Cache", "Reset AI context to the visible request and response.");
         clearCache.addActionListener(e -> clearContextCache());
 
-        addToolbarGroup(bar, "Traffic", send, refreshCookies, clearCache);
+        addToolbarGroup(bar, "Traffic", send, autoDecode, refreshCookies, clearCache);
 
         JButton exportCurl = toolbarButton("curl", "Copy the current request as a curl command.");
         exportCurl.addActionListener(e -> exportCurrent("curl"));
@@ -585,6 +598,144 @@ public final class CockpitPanel extends JPanel {
         }, "burp-cockpit-send");
         thread.setDaemon(true);
         thread.start();
+    }
+
+    private void autoDecodeSelection() {
+        try {
+            Optional<Selection> selected = requestEditor.selection();
+            if (selected.isEmpty() || selected.get().contents().length() == 0) {
+                setStatus("Auto Decode skipped: select encoded text in the request editor first.");
+                return;
+            }
+
+            Selection selection = selected.get();
+            Range range = selection.offsets();
+            if (range.startIndexInclusive() >= range.endIndexExclusive()) {
+                setStatus("Auto Decode skipped: select encoded text in the request editor first.");
+                return;
+            }
+
+            ByteArray originalBytes = selection.contents().copy();
+            String originalText = new String(originalBytes.getBytes(), StandardCharsets.UTF_8);
+            CodecChain.Result result = CodecChain.decode(originalText);
+            if (!result.decodedAnything()) {
+                setStatus("Auto Decode found no supported URL/Base64 encoding in the request selection.");
+                return;
+            }
+
+            showAutoDecodeDialog(originalBytes, range, result);
+        } catch (Throwable throwable) {
+            showError("Auto Decode failed", throwable);
+        }
+    }
+
+    private void showAutoDecodeDialog(ByteArray originalBytes, Range range, CodecChain.Result result) {
+        JTextArea originalArea = TextContextMenu.area(5, 86, false);
+        originalArea.setText(result.original());
+        originalArea.setCaretPosition(0);
+
+        JTextArea decodedArea = TextContextMenu.area(8, 86, true);
+        decodedArea.setText(result.decoded());
+        decodedArea.setCaretPosition(0);
+
+        JTextArea previewArea = TextContextMenu.area(5, 86, false);
+        previewArea.setText(result.reencode(decodedArea.getText()));
+        previewArea.setCaretPosition(0);
+
+        JLabel chainLabel = new JLabel("Detected chain: " + result.chainDisplay());
+
+        JPanel fields = new JPanel(new GridLayout(3, 1, 0, 7));
+        fields.add(frame("Original selected text", new JScrollPane(originalArea)));
+        fields.add(frame("Decoded editable text", new JScrollPane(decodedArea)));
+        fields.add(frame("Re-encoded preview", new JScrollPane(previewArea)));
+
+        Runnable refreshPreview = () -> {
+            previewArea.setText(result.reencode(decodedArea.getText()));
+            previewArea.setCaretPosition(0);
+        };
+        decodedArea.getDocument().addDocumentListener(new DocumentListener() {
+            @Override public void insertUpdate(DocumentEvent e) { refreshPreview.run(); }
+            @Override public void removeUpdate(DocumentEvent e) { refreshPreview.run(); }
+            @Override public void changedUpdate(DocumentEvent e) { refreshPreview.run(); }
+        });
+
+        JPanel buttons = new JPanel(new FlowLayout(FlowLayout.RIGHT, 8, 0));
+        JButton apply = toolbarButton("Apply", "Replace only the original request selection.");
+        JButton copyDecoded = toolbarButton("Copy decoded", "Copy the decoded editable text.");
+        JButton sendToDecoder = toolbarButton("Send original to Burp Decoder", "Open the original selection in Burp Decoder.");
+        JButton cancel = toolbarButton("Cancel", "Close without changing the request.");
+        buttons.add(sendToDecoder);
+        buttons.add(copyDecoded);
+        buttons.add(cancel);
+        buttons.add(apply);
+
+        JPanel content = new JPanel(new BorderLayout(6, 6));
+        content.setBorder(BorderFactory.createEmptyBorder(8, 8, 8, 8));
+        content.add(chainLabel, BorderLayout.NORTH);
+        content.add(fields, BorderLayout.CENTER);
+        content.add(buttons, BorderLayout.SOUTH);
+
+        Window owner = SwingUtilities.getWindowAncestor(this);
+        JDialog dialog = new JDialog(owner, "Auto Decode", Dialog.ModalityType.APPLICATION_MODAL);
+        dialog.setContentPane(content);
+        dialog.getRootPane().setDefaultButton(apply);
+
+        apply.addActionListener(e -> {
+            try {
+                applyAutoDecodeReplacement(range, originalBytes, previewArea.getText());
+                dialog.dispose();
+            } catch (Throwable throwable) {
+                showError("Auto Decode apply failed", throwable);
+            }
+        });
+        copyDecoded.addActionListener(e -> {
+            Toolkit.getDefaultToolkit().getSystemClipboard().setContents(new StringSelection(decodedArea.getText()), null);
+            setStatus("Copied decoded selection to clipboard.");
+        });
+        sendToDecoder.addActionListener(e -> {
+            try {
+                api.decoder().sendToDecoder(originalBytes);
+                setStatus("Sent original selection to Burp Decoder.");
+            } catch (Throwable throwable) {
+                showError("Send to Burp Decoder failed", throwable);
+            }
+        });
+        cancel.addActionListener(e -> dialog.dispose());
+
+        api.userInterface().applyThemeToComponent(content);
+        dialog.pack();
+        dialog.setMinimumSize(new Dimension(780, 580));
+        dialog.setLocationRelativeTo(this);
+        dialog.setVisible(true);
+    }
+
+    private void applyAutoDecodeReplacement(Range range, ByteArray originalBytes, String replacement) {
+        String rawRequest = requestText();
+        byte[] requestBytes = rawRequest.getBytes(StandardCharsets.UTF_8);
+        int start = range.startIndexInclusive();
+        int end = range.endIndexExclusive();
+        if (start < 0 || end < start || end > requestBytes.length) {
+            throw new IllegalStateException("The saved selection no longer matches the request editor contents.");
+        }
+        byte[] selectedBytes = originalBytes.getBytes();
+        if (!Arrays.equals(selectedBytes, Arrays.copyOfRange(requestBytes, start, end))) {
+            throw new IllegalStateException("The request changed after Auto Decode opened. Re-select the encoded value and try again.");
+        }
+
+        byte[] replacementBytes = Objects.toString(replacement, "").getBytes(StandardCharsets.UTF_8);
+        byte[] updated = new byte[start + replacementBytes.length + (requestBytes.length - end)];
+        System.arraycopy(requestBytes, 0, updated, 0, start);
+        System.arraycopy(replacementBytes, 0, updated, start, replacementBytes.length);
+        System.arraycopy(requestBytes, end, updated, start + replacementBytes.length, requestBytes.length - end);
+
+        HttpService service = editorService().orElse(state.currentService());
+        setRequestEditorText(new String(updated, StandardCharsets.UTF_8), service);
+        setStatus("Auto Decode applied " + resultByteCount(end - start, replacementBytes.length) + " to the request selection.");
+        updateContextCounter();
+    }
+
+    private static String resultByteCount(int originalBytes, int replacementBytes) {
+        return originalBytes + " -> " + replacementBytes + " bytes";
     }
 
     private void refreshCookiesFromBurp() {

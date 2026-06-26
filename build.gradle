@@ -21,6 +21,14 @@ compileJava {
     options.release = 21
 }
 
+tasks.register('codecChainTest', JavaExec) {
+    dependsOn testClasses
+    classpath = sourceSets.test.runtimeClasspath
+    mainClass = 'com.buggyboi.burpcockpit.util.CodecChainTest'
+}
+
+check.dependsOn tasks.named('codecChainTest')
+
 jar {
     archiveBaseName = 'burp-cockpit'
     manifest {
